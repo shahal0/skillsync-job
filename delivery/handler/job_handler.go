@@ -3,10 +3,12 @@ package handler
 import (
 	"jobservice/domain/models"
 	"jobservice/usecase"
+	"log"
 	"net/http"
+	"strconv"
 
-	//"github.com/shahal0/skillsync-protos/gen/authpb"
 	"github.com/gin-gonic/gin"
+	"github.com/shahal0/skillsync-protos/gen/jobpb"
 )
 
 type AuthClient interface {
@@ -23,91 +25,182 @@ func NewJobHandler(uc *usecase.JobUsecase) *JobHandler {
 
 // PostJob ensures only employers can post jobs
 func (h *JobHandler) PostJob(c *gin.Context) {
-	// Fetch EmployerID from the context
 	employerID, ok := c.Get("user_id")
 	if !ok || employerID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Failed to fetch employer ID from token"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: Missing employer ID"})
 		return
 	}
-	var job models.Job
-	if err := c.ShouldBindJSON(&job); err != nil {
+	
+	// Convert employerID to string
+	employerIDStr, ok := employerID.(string)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid employer ID format"})
+		return
+	}
+	
+	// Parse request body into jobpb model
+	var jobRequest jobpb.PostJobRequest
+	if err := c.ShouldBindJSON(&jobRequest); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid job data: " + err.Error()})
 		return
 	}
-
-	employerIDStr, ok := employerID.(string)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Employer ID is not a valid string"})
-		return
+	
+	// Set the employer ID in the job model
+	jobRequest.EmployerId = employerIDStr
+	
+	// Convert jobpb model to domain model
+	job := &models.Job{
+		Title:              jobRequest.Title,
+		Description:        jobRequest.Description,
+		Category:           jobRequest.Category,
+		SalaryMin:          jobRequest.SalaryMin,
+		SalaryMax:          jobRequest.SalaryMax,
+		Location:           jobRequest.Location,
+		ExperienceRequired: int(jobRequest.ExperienceRequired),
+		EmployerID:         employerIDStr,
 	}
-	if err := h.usecase.PostJob(c.Request.Context(), &job, employerIDStr); err != nil {
+	
+	// Call the usecase to create the job
+	if err := h.usecase.PostJob(c.Request.Context(), job, employerIDStr); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to post job: " + err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"message": "Job posted successfully"})
+	// Create response using jobpb model
+	response := &jobpb.PostJobResponse{
+		Message: "Job posted successfully",
+	}
+	
+	c.JSON(http.StatusCreated, response)
 }
 
 func (h *JobHandler) GetJobs(c *gin.Context) {
-	filters := map[string]interface{}{}
-	if category := c.Query("category"); category != "" {
-		filters["category"] = category
+	// Create request from query parameters
+	request := &jobpb.GetJobsRequest{
+		Category: c.Query("category"),
+		Keyword: c.Query("keyword"),
+		Location: c.Query("location"),
 	}
-	if keyword := c.Query("keyword"); keyword != "" {
-		filters["keyword"] = keyword
+	
+	// Convert to filters map for usecase
+	filters := map[string]interface{}{}
+	if request.Category != "" {
+		filters["category"] = request.Category
+	}
+	if request.Keyword != "" {
+		filters["keyword"] = request.Keyword
+	}
+	if request.Location != "" {
+		filters["location"] = request.Location
 	}
 
+	// Call usecase
 	jobs, err := h.usecase.GetJobs(c.Request.Context(), filters)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve jobs+" + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve jobs: " + err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, jobs)
+	// Convert domain models to protobuf models
+	response := &jobpb.GetJobsResponse{
+		Jobs: make([]*jobpb.Job, 0, len(jobs)),
+	}
+	
+	for _, job := range jobs {
+		pbJob := &jobpb.Job{
+			Id: strconv.FormatUint(uint64(job.ID), 10),
+			EmployerId: job.EmployerID,
+			Title: job.Title,
+			Description: job.Description,
+			Category: job.Category,
+			SalaryMin: job.SalaryMin,
+			SalaryMax: job.SalaryMax,
+			Location: job.Location,
+			ExperienceRequired: int32(job.ExperienceRequired),
+			Status: job.Status,
+		}
+		response.Jobs = append(response.Jobs, pbJob)
+	}
+	
+	c.JSON(http.StatusOK, response)
 }
 
 // ApplyToJob ensures only candidates can apply for jobs
 func (h *JobHandler) ApplyToJob(c *gin.Context) {
-
+	log.Println("ApplyToJob called")
 	candidateID, ok := c.Get("user_id")
 	if !ok || candidateID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Failed to fetch candidate ID from token"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: Missing candidate ID"})
 		return
 	}
+	
 	candidateIDStr, ok := candidateID.(string)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Candidate ID is not a valid string"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid candidate ID format"})
 		return
 	}
-	jobid := c.Query("job_id")
+	
+	jobid := c.Query("job_id")	
+	
 	if jobid == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Job ID is required"})
 		return
+	}	
+	
+	// Create the request using jobpb model
+	request := &jobpb.ApplyToJobRequest{
+		JobId: jobid,
+		CandidateId: candidateIDStr,
 	}
-	if err := h.usecase.ApplyToJob(c.Request.Context(), candidateIDStr, jobid); err != nil {
+	
+	appid, err := h.usecase.ApplyToJob(c.Request.Context(), request.CandidateId, request.JobId)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to apply to job: " + err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Applied to job successfully"})
+	// Create the response using jobpb model
+	response := &jobpb.ApplyToJobResponse{
+		ApplicationId: appid,
+		Message: "Applied to job successfully",
+	}
+	
+	c.JSON(http.StatusOK, response)
 }
 
 func (h *JobHandler) AddJobSkills(c *gin.Context) {
-	var skills []models.JobSkill
-	if err := c.ShouldBindJSON(&skills); err != nil {
+	// Parse request using jobpb model
+	var request jobpb.AddJobSkillsRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid skills data: " + err.Error()})
 		return
 	}
 
-	jobID := c.Param("job_id")
-	for i := range skills {
-		skills[i].JobID = jobID
+	// If job_id is not in the request body, try to get it from the URL parameter
+	if request.JobId == "" {
+		request.JobId = c.Param("job_id")
 	}
 
+	// Convert to domain model
+	skills := make([]models.JobSkill, 0, len(request.Skills))
+	for _, skill := range request.Skills {
+		skills = append(skills, models.JobSkill{
+			JobID:      request.JobId,
+			Skill:      skill.Skill,
+			Proficiency: skill.Proficiency,
+		})
+	}
+
+	// Call usecase
 	if err := h.usecase.AddJobSkills(c.Request.Context(), skills); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add job skills: " + err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Job skills added successfully"})
+	// Return response using jobpb model
+	response := &jobpb.AddJobSkillsResponse{
+		Message: "Job skills added successfully",
+	}
+
+	c.JSON(http.StatusOK, response)
 }

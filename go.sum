@@ -80,6 +80,8 @@ github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0t
 github.com/rogpeppe/go-internal v1.14.1/go.mod h1:MaRKkUm5W0goXpeCfT7UZI6fk/L7L7so1lCWt35ZSgc=
 github.com/shahal0/skillsync-protos v0.0.0-20250421153752-cad6a6eb4068 h1:3w39zWflJm38qnnicx/SvPS17dCx/o1FEy0fZ4n4H5k=
 github.com/shahal0/skillsync-protos v0.0.0-20250421153752-cad6a6eb4068/go.mod h1:fYY7dW7ZnSF9VsCBHTGMmlwwvu3RCSaxauG1NBp19Zs=
+github.com/shahal0/skillsync-protos v0.0.0-20250520055334-5e62bbdaeaf5 h1:eYoGpQMi3JxDGCZhjyTGRvfWr4Z4sNLJ9LwyxYjpJvo=
+github.com/shahal0/skillsync-protos v0.0.0-20250520055334-5e62bbdaeaf5/go.mod h1:fYY7dW7ZnSF9VsCBHTGMmlwwvu3RCSaxauG1NBp19Zs=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/objx v0.4.0/go.mod h1:YvHI0jy2hoMjB+UWwv71VJQ9isScKT/TqJzVSSt89Yw=
 github.com/stretchr/objx v0.5.0/go.mod h1:Yh+to48EsGEfYuaHDzXPcE3xhTkx73EhmCGUpEOglKo=

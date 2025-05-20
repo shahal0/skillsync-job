@@ -19,10 +19,11 @@ type Job struct {
 	CreatedAt         time.Time `json:"created_at"`
 }
 type Application struct {
-	ID          string    `gorm:"primaryKey;default:gen_random_uuid()" json:"id"`
+	ID          uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	JobID       string    `json:"job_id"`
 	CandidateID string    `json:"candidate_id"`
 	Status      string    `json:"status"` // Applied, Viewed, Shortlisted, Rejected
+	ResumeURL   string    `json:"resume_url"`
 	AppliedAt   time.Time `json:"applied_at"`
 }
 type Jobskills struct {

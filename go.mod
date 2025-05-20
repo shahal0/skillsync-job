@@ -5,7 +5,7 @@ go 1.23
 toolchain go1.23.8
 
 require (
-	github.com/shahal0/skillsync-protos v0.0.0-20250421153752-cad6a6eb4068
+	github.com/shahal0/skillsync-protos v0.0.0-20250520055334-5e62bbdaeaf5
 	gorm.io/gorm v1.25.12
 )
 
