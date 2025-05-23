@@ -10,14 +10,16 @@ import (
 	"strings"
 	
 	"github.com/golang-jwt/jwt"
+	"github.com/shahal0/skillsync-protos/gen/authpb"
 )
 
 type JobUsecase struct {
 	jobRepo repository.JobRepository
+	AuthClient authpb.AuthServiceClient
 }
 
-func NewJobUsecase(repo repository.JobRepository) *JobUsecase {
-	return &JobUsecase{jobRepo: repo}
+func NewJobUsecase(repo repository.JobRepository, authClient authpb.AuthServiceClient) *JobUsecase {
+	return &JobUsecase{jobRepo: repo, AuthClient: authClient}
 }
 
 func (uc *JobUsecase) PostJob(ctx context.Context, job *models.Job,employerid string) error {
@@ -47,6 +49,33 @@ func (uc *JobUsecase) ApplyToJob(ctx context.Context, candidateID string, jobid 
 
 func (uc *JobUsecase) AddJobSkills(ctx context.Context, skills []models.JobSkill) error {
 	return uc.jobRepo.AddJobSkills(ctx, skills)
+}
+
+// UpdateJobStatus updates the status of a job if the requester is the employer who posted it
+func (uc *JobUsecase) UpdateJobStatus(ctx context.Context, jobID string, employerID string, status string) error {
+	// Validate status is one of the allowed values
+	validStatuses := map[string]bool{
+		"OPEN":       true,
+		"IN_PROGRESS": true,
+		"COMPLETED":   true,
+		"CANCELLED":   true,
+	}
+
+	if !validStatuses[status] {
+		return errors.New("invalid status. Must be one of: OPEN, IN_PROGRESS, COMPLETED, CANCELLED")
+	}
+
+	// Validate jobID is not empty
+	if jobID == "" {
+		return errors.New("job ID cannot be empty")
+	}
+
+	// Validate employerID is not empty
+	if employerID == "" {
+		return errors.New("employer ID cannot be empty")
+	}
+
+	return uc.jobRepo.UpdateJobStatus(ctx, jobID, employerID, status)
 }
 
 // VerifyToken implements the TokenVerifier interface

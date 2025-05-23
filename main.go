@@ -7,14 +7,16 @@ import (
 	"jobservice/delivery/routes"
 	"jobservice/domain/models"
 	"jobservice/middleware"
-	"jobservice/migrations"
 	"jobservice/repository"
 	"jobservice/usecase"
 	"log"
 	"net"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shahal0/skillsync-protos/gen/authpb"
 	"github.com/shahal0/skillsync-protos/gen/jobpb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	stdgrpc "google.golang.org/grpc"
 )
 
@@ -23,16 +25,25 @@ func main() {
 
 	// Run auto migrations
 	log.Println("Running auto migrations...")
-	err := db.AutoMigrate(&models.Job{}, &models.Application{}, &models.Jobskills{})
+	err := db.AutoMigrate(&models.Job{}, &models.Application{}, &models.JobSkill{})
 	if err != nil {
 		panic("Migration failed: " + err.Error())
 	}
 
+	// Initialize Auth Service client with detailed logging
+	log.Println("Connecting to Auth Service on localhost:50051...")
+	authConn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatalf("Failed to connect to auth service: %v", err)
+	}
+	authClient := authpb.NewAuthServiceClient(authConn)
+	log.Println("Successfully created Auth Service client connection")
+
 	// Dependency injection
 	jobRepo := repository.NewJobRepository(db)
-	jobUC := usecase.NewJobUsecase(jobRepo)
+	jobUC := usecase.NewJobUsecase(jobRepo, authClient)
 	authMiddleware := middleware.AuthMiddleware
-	jobHandler := handler.NewJobHandler(jobUC)
+	jobHandler := handler.NewJobHandler(jobUC, authClient)
 
 	// Setup Gin router
 	r := gin.Default()
@@ -42,20 +53,20 @@ func main() {
 
 	// Create a new gRPC server
 	grpcServer := stdgrpc.NewServer()
-	
-	// Create the job server implementation
+
+	// Create the job server implementation with auth client
 	jobServer := jobgrpc.NewJobServer(jobUC)
-	
+
 	// Register the job server with the gRPC server
 	jobpb.RegisterJobServiceServer(grpcServer, jobServer)
-	
+
 	// Start gRPC server in a separate goroutine
 	go func() {
 		lis, err := net.Listen("tcp", ":50052")
 		if err != nil {
 			log.Fatalf("Failed to listen on port 50052: %v", err)
 		}
-		
+
 		log.Println("gRPC server is running on port 50052")
 		if err := grpcServer.Serve(lis); err != nil {
 			log.Fatalf("Failed to serve gRPC: %v", err)

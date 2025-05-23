@@ -2,8 +2,14 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"strconv"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"jobservice/domain/models"
 	"jobservice/usecase"
 
 	"github.com/shahal0/skillsync-protos/gen/jobpb"
@@ -26,8 +32,8 @@ func NewJobServer(jobUsecase *usecase.JobUsecase) *JobServer {
 // ApplyToJob implements the ApplyToJob gRPC method
 func (s *JobServer) ApplyToJob(ctx context.Context, req *jobpb.ApplyToJobRequest) (*jobpb.ApplyToJobResponse, error) {
 	// Log the incoming request with more detail
-	log.Printf("\n\n====== GRPC DEBUG: ApplyToJob gRPC method called ======")
-	log.Printf("GRPC DEBUG: Request parameters - JobID: %s, CandidateID: %s", req.JobId, req.CandidateId)
+	log.Printf("GRPC DEBUG: ApplyToJob gRPC method called ")
+	log.Printf("GRPC DEBUG: Request parameters - JobID: %d, CandidateID: %s", req.JobId, req.CandidateId)
 
 	// Extract user information from metadata
 	md, ok := metadata.FromIncomingContext(ctx)
@@ -54,19 +60,28 @@ func (s *JobServer) ApplyToJob(ctx context.Context, req *jobpb.ApplyToJobRequest
 	}
 
 	// Call the usecase to apply to the job
-	log.Printf("GRPC DEBUG: Calling usecase.ApplyToJob with candidateID=%s, jobID=%s", req.CandidateId, req.JobId)
-	applicationID, err := s.jobUsecase.ApplyToJob(ctx, req.CandidateId, req.JobId)
+	// Convert uint64 job ID to string for the usecase
+	jobIDStr := fmt.Sprintf("%d", req.JobId)
+	log.Printf("GRPC DEBUG: Calling usecase.ApplyToJob with candidateID=%s, jobID=%s", req.CandidateId, jobIDStr)
+	applicationID, err := s.jobUsecase.ApplyToJob(ctx, req.CandidateId, jobIDStr)
 	if err != nil {
 		log.Printf("GRPC ERROR: Failed to apply to job: %v", err)
 		return nil, err
 	}
 	log.Printf("GRPC DEBUG: Application ID generated: %s", applicationID)
 
-	log.Printf("GRPC SUCCESS: Successfully applied to job %s for candidate %s with application ID: %s", req.JobId, req.CandidateId, applicationID)
+	log.Printf("GRPC SUCCESS: Successfully applied to job %d for candidate %s with application ID: %s", req.JobId, req.CandidateId, applicationID)
 
 	// Return success response with application ID
+	// Convert string application ID to uint64
+	appIDUint, err := strconv.ParseUint(applicationID, 10, 64)
+	if err != nil {
+		log.Printf("GRPC ERROR: Failed to convert application ID to uint64: %v", err)
+		return nil, fmt.Errorf("invalid application ID format: %v", err)
+	}
+
 	return &jobpb.ApplyToJobResponse{
-		ApplicationId: applicationID,
+		ApplicationId: appIDUint,
 		Message:       "Successfully applied to job",
 	}, nil
 }
@@ -94,38 +109,141 @@ func (s *JobServer) PostJob(ctx context.Context, req *jobpb.PostJobRequest) (*jo
 		log.Printf("GRPC DEBUG: No metadata found in context")
 	}
 
-	// Implementation for posting a job
-	// This is just a stub - you'll need to implement this with your actual logic
+	// Create job model from request
+	job := &models.Job{
+		Title:              req.Title,
+		Description:        req.Description,
+		Category:           req.Category,
+		SalaryMin:          req.SalaryMin,
+		SalaryMax:          req.SalaryMax,
+		Location:           req.Location,
+		ExperienceRequired: int(req.ExperienceRequired),
+		EmployerID:         req.EmployerId,
+		Status:             "Open", // Default status for new jobs
+	}
+
+	// Convert required skills if present
+	if req.RequiredSkills != nil && len(req.RequiredSkills) > 0 {
+		skills := make([]models.JobSkill, 0, len(req.RequiredSkills))
+		for _, skill := range req.RequiredSkills {
+			skills = append(skills, models.JobSkill{
+				Skill:       skill.Skill,
+				Proficiency: skill.Proficiency,
+			})
+		}
+		job.RequiredSkills = skills
+	}
+
+	// Call the usecase to create the job
+	log.Printf("GRPC DEBUG: Calling usecase.PostJob with job details")
+	err := s.jobUsecase.PostJob(ctx, job, req.EmployerId)
+	if err != nil {
+		log.Printf("GRPC ERROR: Failed to create job: %v", err)
+		return nil, err
+	}
+	log.Printf("GRPC DEBUG: Job created with ID: %d", job.ID)
+
+	// Return success response with job ID
 	return &jobpb.PostJobResponse{
+		JobId:   uint64(job.ID),
 		Message: "Job posted successfully",
 	}, nil
 }
 
 // GetJobs implements the GetJobs gRPC method
 func (s *JobServer) GetJobs(ctx context.Context, req *jobpb.GetJobsRequest) (*jobpb.GetJobsResponse, error) {
-	// Implementation for getting jobs
-	// This is just a stub - you'll need to implement this
-	return &jobpb.GetJobsResponse{}, nil
+	log.Printf("GRPC DEBUG: Received GetJobs request")
+
+	// Create filters map from request parameters
+	filters := make(map[string]interface{})
+	if req.Category != "" {
+		filters["category"] = req.Category
+	}
+	if req.Keyword != "" {
+		filters["keyword"] = req.Keyword
+	}
+	if req.Location != "" {
+		filters["location"] = req.Location
+	}
+	// Note: ExperienceRequired field was added to proto but might not be regenerated yet
+	// Uncomment this when the protobuf code is regenerated
+	/*
+		if req.ExperienceRequired != "" {
+			// Convert experience_required string to int if needed
+			expReq, err := strconv.Atoi(req.ExperienceRequired)
+			if err == nil {
+				filters["experience_required"] = expReq
+			}
+		}
+	*/
+
+	// Call usecase to get jobs
+	jobs, err := s.jobUsecase.GetJobs(ctx, filters)
+	if err != nil {
+		log.Printf("GRPC ERROR: Failed to get jobs: %v", err)
+		return nil, err
+	}
+
+	// Convert domain jobs to protobuf jobs
+	pbJobs := make([]*jobpb.Job, 0, len(jobs))
+	for _, job := range jobs {
+		// Convert job skills to protobuf format
+		var pbSkills []*jobpb.JobSkill
+		for _, skill := range job.RequiredSkills {
+			pbSkills = append(pbSkills, &jobpb.JobSkill{
+				JobId:       strconv.FormatUint(uint64(skill.JobID), 10),
+				Skill:       skill.Skill,
+				Proficiency: skill.Proficiency,
+			})
+		}
+
+		// Default to OPEN if status is not recognized
+		status := "OPEN"
+		switch job.Status {
+		case "CLOSED", "DRAFT":
+			status = job.Status
+		}
+
+		// Skipping employer profile fetch due to field name mismatches
+		// This will be implemented properly once the protobuf definitions are aligned
+		var jobEmployerProfile *jobpb.EmployerProfile = nil
+
+		// Convert job to protobuf format
+		pbJob := &jobpb.Job{
+			Id:                 uint64(job.ID),
+			EmployerId:         job.EmployerID,
+			Title:              job.Title,
+			Description:        job.Description,
+			Category:           job.Category,
+			RequiredSkills:     pbSkills, // Skills are included here
+			SalaryMin:          job.SalaryMin,
+			SalaryMax:          job.SalaryMax,
+			Location:           job.Location,
+			ExperienceRequired: int32(job.ExperienceRequired),
+			Status:             status,
+			EmployerProfile:    jobEmployerProfile, // Add the employer profile to the job
+		}
+		pbJobs = append(pbJobs, pbJob)
+	}
+
+	log.Printf("GRPC DEBUG: Returning %d jobs", len(pbJobs))
+	return &jobpb.GetJobsResponse{
+		Jobs: pbJobs,
+	}, nil
 }
 
 // GetJobById implements the GetJobById gRPC method
 func (s *JobServer) GetJobById(ctx context.Context, req *jobpb.GetJobByIdRequest) (*jobpb.GetJobByIdResponse, error) {
-	// Implementation for getting a job by ID
-	// This is just a stub - you'll need to implement this
 	return &jobpb.GetJobByIdResponse{}, nil
 }
 
 // GetApplications implements the GetApplications gRPC method
 func (s *JobServer) GetApplications(ctx context.Context, req *jobpb.GetApplicationsRequest) (*jobpb.GetApplicationsResponse, error) {
-	// Implementation for getting applications
-	// This is just a stub - you'll need to implement this
 	return &jobpb.GetApplicationsResponse{}, nil
 }
 
 // UpdateApplicationStatus implements the UpdateApplicationStatus gRPC method
 func (s *JobServer) UpdateApplicationStatus(ctx context.Context, req *jobpb.UpdateApplicationStatusRequest) (*jobpb.UpdateApplicationStatusResponse, error) {
-	// Implementation for updating application status
-	// This is just a stub - you'll need to implement this
 	return &jobpb.UpdateApplicationStatusResponse{
 		Message: "Application status updated successfully",
 	}, nil
@@ -133,9 +251,80 @@ func (s *JobServer) UpdateApplicationStatus(ctx context.Context, req *jobpb.Upda
 
 // AddJobSkills implements the AddJobSkills gRPC method
 func (s *JobServer) AddJobSkills(ctx context.Context, req *jobpb.AddJobSkillsRequest) (*jobpb.AddJobSkillsResponse, error) {
-	// Implementation for adding job skills
-	// This is just a stub - you'll need to implement this
+	log.Printf("GRPC DEBUG: Received AddJobSkills request for job ID: %s", req.JobId)
+
+	// Convert job ID from string to uint
+	jobID := req.JobId
+	if jobID == 0 {
+		log.Printf("GRPC ERROR: Invalid job ID format: %v", jobID)
+		return nil, status.Error(codes.InvalidArgument, "invalid job ID format")
+	}
+
+	// Create a single job skill from the request
+	skills := []models.JobSkill{
+		{
+			JobID:       uint(jobID),
+			Skill:       req.Skill,
+			Proficiency: req.Proficiency,
+		},
+	}
+
+	// Call usecase to add job skills
+	var err error
+	err = s.jobUsecase.AddJobSkills(ctx, skills)
+	if err != nil {
+		log.Printf("GRPC ERROR: Failed to add job skills: %v", err)
+		return nil, err
+	}
+
+	log.Printf("GRPC DEBUG: Successfully added %d skills to job ID: %s", len(skills), req.JobId)
 	return &jobpb.AddJobSkillsResponse{
-		Message: "Job skills added successfully",
+		Message: fmt.Sprintf("Successfully added %d skills to job", len(skills)),
+	}, nil
+}
+
+// UpdateJobStatus implements the UpdateJobStatus gRPC method
+func (s *JobServer) UpdateJobStatus(ctx context.Context, req *jobpb.UpdateJobStatusRequest) (*jobpb.UpdateJobStatusResponse, error) {
+	log.Printf("GRPC DEBUG: UpdateJobStatus gRPC method called")
+	log.Printf("GRPC DEBUG: Request parameters - JobID: %s, Status: %s", req.JobId, req.Status)
+
+	// Extract user information from metadata
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		log.Println("GRPC ERROR: No metadata found in context")
+		return nil, status.Error(codes.Unauthenticated, "missing metadata")
+	}
+
+	// Get employer ID from metadata (set by auth middleware)
+	employerIDs := md.Get("x-user-id")
+	userRoles := md.Get("x-user-role")
+
+	if len(employerIDs) == 0 || len(userRoles) == 0 {
+		log.Println("GRPC ERROR: Missing user ID or role in metadata")
+		return nil, status.Error(codes.Unauthenticated, "missing user ID or role in metadata")
+	}
+
+	employerID := employerIDs[0]
+	userRole := userRoles[0]
+
+	// Verify the user is an employer
+	if userRole != "employer" {
+		log.Printf("GRPC ERROR: User with role '%s' is not authorized to update job status", userRole)
+		return nil, status.Error(codes.PermissionDenied, "only employers can update job status")
+	}
+
+	log.Printf("GRPC DEBUG: Updating job status - JobID: %s, EmployerID: %s, New Status: %s",
+		req.JobId, employerID, req.Status)
+
+	// Call the usecase to update the job status
+	err := s.jobUsecase.UpdateJobStatus(ctx, req.JobId, employerID, req.Status)
+	if err != nil {
+		log.Printf("GRPC ERROR: Failed to update job status: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to update job status: %v", err)
+	}
+
+	log.Printf("GRPC SUCCESS: Successfully updated status of job ID %s to %s", req.JobId, req.Status)
+	return &jobpb.UpdateJobStatusResponse{
+		Message: "Job status updated successfully",
 	}, nil
 }
