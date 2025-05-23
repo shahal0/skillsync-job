@@ -78,10 +78,8 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=
 github.com/rogpeppe/go-internal v1.14.1/go.mod h1:MaRKkUm5W0goXpeCfT7UZI6fk/L7L7so1lCWt35ZSgc=
-github.com/shahal0/skillsync-protos v0.0.0-20250522093329-f9cc36b6c075 h1:NbN0OsMe/5U90k/fSeOI4E3GjC/aDi+Dso1qkTkCJHw=
-github.com/shahal0/skillsync-protos v0.0.0-20250522093329-f9cc36b6c075/go.mod h1:fYY7dW7ZnSF9VsCBHTGMmlwwvu3RCSaxauG1NBp19Zs=
-github.com/shahal0/skillsync-protos v0.0.0-20250522124546-3bb8b41e315d h1:gbTXYk938aSixv4J4xP5MEIFrGEr18h5qA/Is5/Bdu0=
-github.com/shahal0/skillsync-protos v0.0.0-20250522124546-3bb8b41e315d/go.mod h1:fYY7dW7ZnSF9VsCBHTGMmlwwvu3RCSaxauG1NBp19Zs=
+github.com/shahal0/skillsync-protos v0.0.0-20250523045229-1e16a5ab59e1 h1:s/D7pGFL9cpKYAZ4FTxS5RuYcpAz6hzDIX+0Y/WmmYM=
+github.com/shahal0/skillsync-protos v0.0.0-20250523045229-1e16a5ab59e1/go.mod h1:fYY7dW7ZnSF9VsCBHTGMmlwwvu3RCSaxauG1NBp19Zs=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/objx v0.4.0/go.mod h1:YvHI0jy2hoMjB+UWwv71VJQ9isScKT/TqJzVSSt89Yw=
 github.com/stretchr/objx v0.5.0/go.mod h1:Yh+to48EsGEfYuaHDzXPcE3xhTkx73EhmCGUpEOglKo=

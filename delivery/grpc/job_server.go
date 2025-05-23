@@ -5,15 +5,16 @@ import (
 	"fmt"
 	"log"
 	"strconv"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"time"
 
 	"jobservice/domain/models"
 	"jobservice/usecase"
 
+	"github.com/shahal0/skillsync-protos/gen/authpb"
 	"github.com/shahal0/skillsync-protos/gen/jobpb"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 // JobServer implements the JobService gRPC server
@@ -204,9 +205,129 @@ func (s *JobServer) GetJobs(ctx context.Context, req *jobpb.GetJobsRequest) (*jo
 			status = job.Status
 		}
 
-		// Skipping employer profile fetch due to field name mismatches
-		// This will be implemented properly once the protobuf definitions are aligned
-		var jobEmployerProfile *jobpb.EmployerProfile = nil
+		// Initialize employer profile and company details
+		jobEmployerProfile := &jobpb.EmployerProfile{}
+		companyDetails := &jobpb.CompanyDetails{
+			Details: []*jobpb.EmployerDetail{},
+		}
+
+		// Fetch employer profile from Auth Service if possible
+		if s.jobUsecase.AuthClient != nil && job.EmployerID != "" {
+			log.Printf("GRPC DEBUG: Fetching employer profile for ID: %s", job.EmployerID)
+
+			// Create request to get employer profile by ID
+			req := &authpb.EmployerProfileByIdRequest{
+				EmployerId: job.EmployerID,
+			}
+			log.Printf("GRPC DEBUG: Created request with EmployerId: %s", job.EmployerID)
+
+			// Call Auth Service to get employer profile
+			log.Printf("GRPC DEBUG: Calling Auth Service EmployerProfileById method")
+
+			// Create a context with timeout to avoid hanging if Auth Service is unresponsive
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			employerResp, err := s.jobUsecase.AuthClient.EmployerProfileById(ctx, req)
+
+			if err != nil {
+				log.Printf("GRPC ERROR: Failed to fetch employer profile: %v", err)
+				// Check if this is a not found error
+				st, ok := grpcstatus.FromError(err)
+				if ok && st.Code() == codes.NotFound {
+					log.Printf("GRPC INFO: Employer with ID %s not found in Auth Service", job.EmployerID)
+				} else {
+					log.Printf("GRPC ERROR: Connection issue or other error with Auth Service: %v", err)
+				}
+			} else if employerResp == nil {
+				log.Printf("GRPC WARNING: Auth Service returned nil response for employer ID: %s", job.EmployerID)
+			} else {
+				log.Printf("GRPC DEBUG: Successfully fetched employer profile for ID: %s", job.EmployerID)
+				log.Printf("GRPC DEBUG: Employer profile details - CompanyName: '%s', Email: '%s', Location: '%s', Website: '%s', Industry: '%s'",
+					employerResp.CompanyName, employerResp.Email, employerResp.Location, employerResp.Website, employerResp.Industry)
+
+				// Check if all fields are empty
+				if employerResp.CompanyName == "" && employerResp.Email == "" && employerResp.Location == "" &&
+					employerResp.Website == "" && employerResp.Industry == "" {
+					log.Printf("GRPC WARNING: Auth Service returned empty employer profile for ID: %s", job.EmployerID)
+
+					// Use job data as fallback for empty employer profiles
+					employerResp.CompanyName = "Company " + job.EmployerID
+					employerResp.Location = job.Location
+					log.Printf("GRPC INFO: Using job data as fallback for empty employer profile")
+				}
+
+				// Create company details from the employer profile response
+				details := []*jobpb.EmployerDetail{}
+
+				// Add company name
+				if employerResp.CompanyName != "" {
+					details = append(details, &jobpb.EmployerDetail{
+						Key:   "company_name",
+						Value: employerResp.CompanyName,
+					})
+				}
+
+				// Add email
+				if employerResp.Email != "" {
+					details = append(details, &jobpb.EmployerDetail{
+						Key:   "email",
+						Value: employerResp.Email,
+					})
+				}
+
+				// Add location
+				if employerResp.Location != "" {
+					details = append(details, &jobpb.EmployerDetail{
+						Key:   "location",
+						Value: employerResp.Location,
+					})
+				}
+
+				// Add website
+				if employerResp.Website != "" {
+					details = append(details, &jobpb.EmployerDetail{
+						Key:   "website",
+						Value: employerResp.Website,
+					})
+				}
+
+				// Add industry
+				if employerResp.Industry != "" {
+					details = append(details, &jobpb.EmployerDetail{
+						Key:   "industry",
+						Value: employerResp.Industry,
+					})
+				}
+
+				// Set the company details
+				companyDetails.Details = details
+				jobEmployerProfile.CompanyName = employerResp.CompanyName
+				jobEmployerProfile.Email = employerResp.Email
+				jobEmployerProfile.Location = employerResp.Location
+				jobEmployerProfile.Website = employerResp.Website
+				jobEmployerProfile.Industry = employerResp.Industry
+			}
+		} else {
+			// If we can't fetch from Auth Service, use job data as fallback
+			log.Printf("GRPC DEBUG: Using job data as fallback for company details")
+
+			// Add location from job data
+			companyDetails.Details = append(companyDetails.Details, &jobpb.EmployerDetail{
+				Key:   "location",
+				Value: job.Location,
+			})
+
+			// Add a default company name
+			companyDetails.Details = append(companyDetails.Details, &jobpb.EmployerDetail{
+				Key:   "company_name",
+				Value: "Company",
+			})
+
+			// Populate employer profile with fallback data
+			jobEmployerProfile.CompanyName = "Company"
+			jobEmployerProfile.Location = job.Location
+		}
 
 		// Convert job to protobuf format
 		pbJob := &jobpb.Job{
@@ -222,6 +343,7 @@ func (s *JobServer) GetJobs(ctx context.Context, req *jobpb.GetJobsRequest) (*jo
 			ExperienceRequired: int32(job.ExperienceRequired),
 			Status:             status,
 			EmployerProfile:    jobEmployerProfile, // Add the employer profile to the job
+			CompanyDetails:     companyDetails,     // Add the company details to the job
 		}
 		pbJobs = append(pbJobs, pbJob)
 	}
@@ -257,7 +379,7 @@ func (s *JobServer) AddJobSkills(ctx context.Context, req *jobpb.AddJobSkillsReq
 	jobID := req.JobId
 	if jobID == 0 {
 		log.Printf("GRPC ERROR: Invalid job ID format: %v", jobID)
-		return nil, status.Error(codes.InvalidArgument, "invalid job ID format")
+		return nil, grpcstatus.Error(codes.InvalidArgument, "invalid job ID format")
 	}
 
 	// Create a single job skill from the request
@@ -292,7 +414,7 @@ func (s *JobServer) UpdateJobStatus(ctx context.Context, req *jobpb.UpdateJobSta
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		log.Println("GRPC ERROR: No metadata found in context")
-		return nil, status.Error(codes.Unauthenticated, "missing metadata")
+		return nil, grpcstatus.Error(codes.Unauthenticated, "missing metadata")
 	}
 
 	// Get employer ID from metadata (set by auth middleware)
@@ -301,7 +423,7 @@ func (s *JobServer) UpdateJobStatus(ctx context.Context, req *jobpb.UpdateJobSta
 
 	if len(employerIDs) == 0 || len(userRoles) == 0 {
 		log.Println("GRPC ERROR: Missing user ID or role in metadata")
-		return nil, status.Error(codes.Unauthenticated, "missing user ID or role in metadata")
+		return nil, grpcstatus.Error(codes.Unauthenticated, "missing user ID or role in metadata")
 	}
 
 	employerID := employerIDs[0]
@@ -310,7 +432,7 @@ func (s *JobServer) UpdateJobStatus(ctx context.Context, req *jobpb.UpdateJobSta
 	// Verify the user is an employer
 	if userRole != "employer" {
 		log.Printf("GRPC ERROR: User with role '%s' is not authorized to update job status", userRole)
-		return nil, status.Error(codes.PermissionDenied, "only employers can update job status")
+		return nil, grpcstatus.Error(codes.PermissionDenied, "only employers can update job status")
 	}
 
 	log.Printf("GRPC DEBUG: Updating job status - JobID: %s, EmployerID: %s, New Status: %s",
@@ -320,7 +442,7 @@ func (s *JobServer) UpdateJobStatus(ctx context.Context, req *jobpb.UpdateJobSta
 	err := s.jobUsecase.UpdateJobStatus(ctx, req.JobId, employerID, req.Status)
 	if err != nil {
 		log.Printf("GRPC ERROR: Failed to update job status: %v", err)
-		return nil, status.Errorf(codes.Internal, "failed to update job status: %v", err)
+		return nil, grpcstatus.Errorf(codes.Internal, "failed to update job status: %v", err)
 	}
 
 	log.Printf("GRPC SUCCESS: Successfully updated status of job ID %s to %s", req.JobId, req.Status)
