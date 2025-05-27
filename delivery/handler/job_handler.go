@@ -21,6 +21,7 @@ type AuthClient interface {
 type JobHandler struct {
 	usecase    *usecase.JobUsecase
 	authClient authpb.AuthServiceClient
+
 }
 
 func NewJobHandler(uc *usecase.JobUsecase, authClient authpb.AuthServiceClient) *JobHandler {
@@ -429,4 +430,14 @@ func (h *JobHandler) AddJobSkills(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+func (h *JobHandler) GetJobByID(c *gin.Context) {
+	jobID := c.Param("id")
+	job, err := h.usecase.GetJobByID(c.Request.Context(), jobID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+		return
+	}
+	c.JSON(http.StatusOK, job)
 }

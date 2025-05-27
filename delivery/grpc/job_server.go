@@ -3,15 +3,15 @@ package grpc
 import (
 	"context"
 	"fmt"
-	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"jobservice/domain/models"
 	"jobservice/usecase"
 
 	"github.com/shahal0/skillsync-protos/gen/authpb"
-	"github.com/shahal0/skillsync-protos/gen/jobpb"
+	jobpb "github.com/shahal0/skillsync-protos/gen/jobpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	grpcstatus "google.golang.org/grpc/status"
@@ -32,52 +32,32 @@ func NewJobServer(jobUsecase *usecase.JobUsecase) *JobServer {
 
 // ApplyToJob implements the ApplyToJob gRPC method
 func (s *JobServer) ApplyToJob(ctx context.Context, req *jobpb.ApplyToJobRequest) (*jobpb.ApplyToJobResponse, error) {
-	// Log the incoming request with more detail
-	log.Printf("GRPC DEBUG: ApplyToJob gRPC method called ")
-	log.Printf("GRPC DEBUG: Request parameters - JobID: %d, CandidateID: %s", req.JobId, req.CandidateId)
-
 	// Extract user information from metadata
 	md, ok := metadata.FromIncomingContext(ctx)
 	if ok {
 		userIDs := md.Get("x-user-id")
 		userRoles := md.Get("x-user-role")
-		log.Printf("GRPC DEBUG: Metadata received - User ID: %v, Role: %v", userIDs, userRoles)
-
-		// Verify that the user is a candidate
 		if len(userRoles) > 0 && userRoles[0] == "candidate" {
-			log.Printf("GRPC DEBUG: User role verified as candidate")
-
 			// Verify that the user ID from metadata matches the candidate ID in the request
 			if len(userIDs) > 0 && userIDs[0] == req.CandidateId {
-				log.Printf("GRPC DEBUG: User ID from metadata matches candidate ID in request")
-			} else {
-				log.Printf("GRPC WARNING: User ID from metadata (%v) does not match candidate ID in request (%s)", userIDs, req.CandidateId)
+				// OK
 			}
-		} else {
-			log.Printf("GRPC ERROR: User role verification failed or missing")
 		}
-	} else {
-		log.Printf("GRPC DEBUG: No metadata found in context")
 	}
 
-	// Call the usecase to apply to the job
-	// Convert uint64 job ID to string for the usecase
 	jobIDStr := fmt.Sprintf("%d", req.JobId)
-	log.Printf("GRPC DEBUG: Calling usecase.ApplyToJob with candidateID=%s, jobID=%s", req.CandidateId, jobIDStr)
 	applicationID, err := s.jobUsecase.ApplyToJob(ctx, req.CandidateId, jobIDStr)
 	if err != nil {
-		log.Printf("GRPC ERROR: Failed to apply to job: %v", err)
-		return nil, err
+		// Check for specific error types
+		if strings.Contains(err.Error(), "already applied") {
+			return nil, grpcstatus.Error(codes.AlreadyExists, err.Error())
+		}
+
+		return nil, grpcstatus.Error(codes.Internal, fmt.Sprintf("failed to apply to job: %v", err))
 	}
-	log.Printf("GRPC DEBUG: Application ID generated: %s", applicationID)
 
-	log.Printf("GRPC SUCCESS: Successfully applied to job %d for candidate %s with application ID: %s", req.JobId, req.CandidateId, applicationID)
-
-	// Return success response with application ID
-	// Convert string application ID to uint64
 	appIDUint, err := strconv.ParseUint(applicationID, 10, 64)
 	if err != nil {
-		log.Printf("GRPC ERROR: Failed to convert application ID to uint64: %v", err)
 		return nil, fmt.Errorf("invalid application ID format: %v", err)
 	}
 
@@ -89,25 +69,15 @@ func (s *JobServer) ApplyToJob(ctx context.Context, req *jobpb.ApplyToJobRequest
 
 // PostJob implements the PostJob gRPC method
 func (s *JobServer) PostJob(ctx context.Context, req *jobpb.PostJobRequest) (*jobpb.PostJobResponse, error) {
-	// Log the incoming request
-	log.Printf("\n\n====== GRPC DEBUG: PostJob gRPC method called ======")
-	log.Printf("GRPC DEBUG: EmployerID: %s", req.EmployerId)
-
 	// Extract user information from metadata
 	md, ok := metadata.FromIncomingContext(ctx)
 	if ok {
-		userIDs := md.Get("x-user-id")
 		userRoles := md.Get("x-user-role")
-		log.Printf("GRPC DEBUG: Metadata received - User ID: %v, Role: %v", userIDs, userRoles)
 
 		// Verify that the user is an employer
 		if len(userRoles) > 0 && userRoles[0] == "employer" {
-			log.Printf("GRPC DEBUG: User role verified as employer")
-		} else {
-			log.Printf("GRPC ERROR: User role verification failed or missing")
+			// OK
 		}
-	} else {
-		log.Printf("GRPC DEBUG: No metadata found in context")
 	}
 
 	// Create job model from request
@@ -120,7 +90,7 @@ func (s *JobServer) PostJob(ctx context.Context, req *jobpb.PostJobRequest) (*jo
 		Location:           req.Location,
 		ExperienceRequired: int(req.ExperienceRequired),
 		EmployerID:         req.EmployerId,
-		Status:             "Open", // Default status for new jobs
+		Status:             "Open", 
 	}
 
 	// Convert required skills if present
@@ -136,13 +106,10 @@ func (s *JobServer) PostJob(ctx context.Context, req *jobpb.PostJobRequest) (*jo
 	}
 
 	// Call the usecase to create the job
-	log.Printf("GRPC DEBUG: Calling usecase.PostJob with job details")
 	err := s.jobUsecase.PostJob(ctx, job, req.EmployerId)
 	if err != nil {
-		log.Printf("GRPC ERROR: Failed to create job: %v", err)
 		return nil, err
 	}
-	log.Printf("GRPC DEBUG: Job created with ID: %d", job.ID)
 
 	// Return success response with job ID
 	return &jobpb.PostJobResponse{
@@ -153,11 +120,10 @@ func (s *JobServer) PostJob(ctx context.Context, req *jobpb.PostJobRequest) (*jo
 
 // GetJobs implements the GetJobs gRPC method
 func (s *JobServer) GetJobs(ctx context.Context, req *jobpb.GetJobsRequest) (*jobpb.GetJobsResponse, error) {
-	log.Printf("GRPC DEBUG: Received GetJobs request")
-
 	// Create filters map from request parameters
 	filters := make(map[string]interface{})
 	if req.Category != "" {
+		// Use exact case-sensitive match for category
 		filters["category"] = req.Category
 	}
 	if req.Keyword != "" {
@@ -166,22 +132,8 @@ func (s *JobServer) GetJobs(ctx context.Context, req *jobpb.GetJobsRequest) (*jo
 	if req.Location != "" {
 		filters["location"] = req.Location
 	}
-	// Note: ExperienceRequired field was added to proto but might not be regenerated yet
-	// Uncomment this when the protobuf code is regenerated
-	/*
-		if req.ExperienceRequired != "" {
-			// Convert experience_required string to int if needed
-			expReq, err := strconv.Atoi(req.ExperienceRequired)
-			if err == nil {
-				filters["experience_required"] = expReq
-			}
-		}
-	*/
-
-	// Call usecase to get jobs
 	jobs, err := s.jobUsecase.GetJobs(ctx, filters)
 	if err != nil {
-		log.Printf("GRPC ERROR: Failed to get jobs: %v", err)
 		return nil, err
 	}
 
@@ -190,12 +142,15 @@ func (s *JobServer) GetJobs(ctx context.Context, req *jobpb.GetJobsRequest) (*jo
 	for _, job := range jobs {
 		// Convert job skills to protobuf format
 		var pbSkills []*jobpb.JobSkill
-		for _, skill := range job.RequiredSkills {
-			pbSkills = append(pbSkills, &jobpb.JobSkill{
-				JobId:       strconv.FormatUint(uint64(skill.JobID), 10),
-				Skill:       skill.Skill,
-				Proficiency: skill.Proficiency,
-			})
+		// Ensure RequiredSkills is loaded
+		if job.RequiredSkills != nil {
+			for _, skill := range job.RequiredSkills {
+				pbSkills = append(pbSkills, &jobpb.JobSkill{
+					JobId:       strconv.FormatUint(uint64(job.ID), 10), // Use job.ID instead of skill.JobID
+					Skill:       skill.Skill,
+					Proficiency: skill.Proficiency,
+				})
+			}
 		}
 
 		// Default to OPEN if status is not recognized
@@ -213,16 +168,9 @@ func (s *JobServer) GetJobs(ctx context.Context, req *jobpb.GetJobsRequest) (*jo
 
 		// Fetch employer profile from Auth Service if possible
 		if s.jobUsecase.AuthClient != nil && job.EmployerID != "" {
-			log.Printf("GRPC DEBUG: Fetching employer profile for ID: %s", job.EmployerID)
-
-			// Create request to get employer profile by ID
 			req := &authpb.EmployerProfileByIdRequest{
 				EmployerId: job.EmployerID,
 			}
-			log.Printf("GRPC DEBUG: Created request with EmployerId: %s", job.EmployerID)
-
-			// Call Auth Service to get employer profile
-			log.Printf("GRPC DEBUG: Calling Auth Service EmployerProfileById method")
 
 			// Create a context with timeout to avoid hanging if Auth Service is unresponsive
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -231,88 +179,72 @@ func (s *JobServer) GetJobs(ctx context.Context, req *jobpb.GetJobsRequest) (*jo
 			employerResp, err := s.jobUsecase.AuthClient.EmployerProfileById(ctx, req)
 
 			if err != nil {
-				log.Printf("GRPC ERROR: Failed to fetch employer profile: %v", err)
 				// Check if this is a not found error
 				st, ok := grpcstatus.FromError(err)
 				if ok && st.Code() == codes.NotFound {
-					log.Printf("GRPC INFO: Employer with ID %s not found in Auth Service", job.EmployerID)
+					// Employer not found, use job data as fallback
+					employerResp = &authpb.EmployerProfileResponse{
+						CompanyName: "Company " + job.EmployerID,
+						Location:    job.Location,
+					}
 				} else {
-					log.Printf("GRPC ERROR: Connection issue or other error with Auth Service: %v", err)
+					// Other error with Auth Service
+					return nil, grpcstatus.Error(codes.Internal, fmt.Sprintf("failed to fetch employer profile: %v", err))
 				}
-			} else if employerResp == nil {
-				log.Printf("GRPC WARNING: Auth Service returned nil response for employer ID: %s", job.EmployerID)
-			} else {
-				log.Printf("GRPC DEBUG: Successfully fetched employer profile for ID: %s", job.EmployerID)
-				log.Printf("GRPC DEBUG: Employer profile details - CompanyName: '%s', Email: '%s', Location: '%s', Website: '%s', Industry: '%s'",
-					employerResp.CompanyName, employerResp.Email, employerResp.Location, employerResp.Website, employerResp.Industry)
-
-				// Check if all fields are empty
-				if employerResp.CompanyName == "" && employerResp.Email == "" && employerResp.Location == "" &&
-					employerResp.Website == "" && employerResp.Industry == "" {
-					log.Printf("GRPC WARNING: Auth Service returned empty employer profile for ID: %s", job.EmployerID)
-
-					// Use job data as fallback for empty employer profiles
-					employerResp.CompanyName = "Company " + job.EmployerID
-					employerResp.Location = job.Location
-					log.Printf("GRPC INFO: Using job data as fallback for empty employer profile")
-				}
-
-				// Create company details from the employer profile response
-				details := []*jobpb.EmployerDetail{}
-
-				// Add company name
-				if employerResp.CompanyName != "" {
-					details = append(details, &jobpb.EmployerDetail{
-						Key:   "company_name",
-						Value: employerResp.CompanyName,
-					})
-				}
-
-				// Add email
-				if employerResp.Email != "" {
-					details = append(details, &jobpb.EmployerDetail{
-						Key:   "email",
-						Value: employerResp.Email,
-					})
-				}
-
-				// Add location
-				if employerResp.Location != "" {
-					details = append(details, &jobpb.EmployerDetail{
-						Key:   "location",
-						Value: employerResp.Location,
-					})
-				}
-
-				// Add website
-				if employerResp.Website != "" {
-					details = append(details, &jobpb.EmployerDetail{
-						Key:   "website",
-						Value: employerResp.Website,
-					})
-				}
-
-				// Add industry
-				if employerResp.Industry != "" {
-					details = append(details, &jobpb.EmployerDetail{
-						Key:   "industry",
-						Value: employerResp.Industry,
-					})
-				}
-
-				// Set the company details
-				companyDetails.Details = details
-				jobEmployerProfile.CompanyName = employerResp.CompanyName
-				jobEmployerProfile.Email = employerResp.Email
-				jobEmployerProfile.Location = employerResp.Location
-				jobEmployerProfile.Website = employerResp.Website
-				jobEmployerProfile.Industry = employerResp.Industry
 			}
+
+			// Create company details from the employer profile response
+			details := []*jobpb.EmployerDetail{}
+
+			// Add company name
+			if employerResp.CompanyName != "" {
+				details = append(details, &jobpb.EmployerDetail{
+					Key:   "company_name",
+					Value: employerResp.CompanyName,
+				})
+			}
+
+			// Add email
+			if employerResp.Email != "" {
+				details = append(details, &jobpb.EmployerDetail{
+					Key:   "email",
+					Value: employerResp.Email,
+				})
+			}
+
+			// Add location
+			if employerResp.Location != "" {
+				details = append(details, &jobpb.EmployerDetail{
+					Key:   "location",
+					Value: employerResp.Location,
+				})
+			}
+
+			// Add website
+			if employerResp.Website != "" {
+				details = append(details, &jobpb.EmployerDetail{
+					Key:   "website",
+					Value: employerResp.Website,
+				})
+			}
+
+			// Add industry
+			if employerResp.Industry != "" {
+				details = append(details, &jobpb.EmployerDetail{
+					Key:   "industry",
+					Value: employerResp.Industry,
+				})
+			}
+
+			// Set the company details
+			companyDetails.Details = details
+			jobEmployerProfile.CompanyName = employerResp.CompanyName
+			jobEmployerProfile.Email = employerResp.Email
+			jobEmployerProfile.Location = employerResp.Location
+			jobEmployerProfile.Website = employerResp.Website
+			jobEmployerProfile.Industry = employerResp.Industry
 		} else {
 			// If we can't fetch from Auth Service, use job data as fallback
-			log.Printf("GRPC DEBUG: Using job data as fallback for company details")
-
-			// Add location from job data
 			companyDetails.Details = append(companyDetails.Details, &jobpb.EmployerDetail{
 				Key:   "location",
 				Value: job.Location,
@@ -348,7 +280,6 @@ func (s *JobServer) GetJobs(ctx context.Context, req *jobpb.GetJobsRequest) (*jo
 		pbJobs = append(pbJobs, pbJob)
 	}
 
-	log.Printf("GRPC DEBUG: Returning %d jobs", len(pbJobs))
 	return &jobpb.GetJobsResponse{
 		Jobs: pbJobs,
 	}, nil
@@ -356,12 +287,352 @@ func (s *JobServer) GetJobs(ctx context.Context, req *jobpb.GetJobsRequest) (*jo
 
 // GetJobById implements the GetJobById gRPC method
 func (s *JobServer) GetJobById(ctx context.Context, req *jobpb.GetJobByIdRequest) (*jobpb.GetJobByIdResponse, error) {
-	return &jobpb.GetJobByIdResponse{}, nil
+	// Convert uint64 job ID to string for the usecase
+	jobIDStr := strconv.FormatUint(req.JobId, 10)
+
+	// Call usecase to get job by ID
+	job, err := s.jobUsecase.GetJobByID(ctx, jobIDStr)
+	if err != nil {
+		return nil, grpcstatus.Errorf(codes.NotFound, "job not found: %v", err)
+	}
+
+	// Convert job skills to protobuf format
+	var pbSkills []*jobpb.JobSkill
+	for _, skill := range job.RequiredSkills {
+		pbSkills = append(pbSkills, &jobpb.JobSkill{
+			JobId:       strconv.FormatUint(uint64(skill.JobID), 10),
+			Skill:       skill.Skill,
+			Proficiency: skill.Proficiency,
+		})
+	}
+
+	// Default to OPEN if status is not recognized
+	status := "OPEN"
+	switch job.Status {
+	case "CLOSED", "DRAFT":
+		status = job.Status
+	}
+
+	// Initialize employer profile and company details
+	jobEmployerProfile := &jobpb.EmployerProfile{}
+	companyDetails := &jobpb.CompanyDetails{
+		Details: []*jobpb.EmployerDetail{},
+	}
+
+	// Fetch employer profile from Auth Service if possible
+	if s.jobUsecase.AuthClient != nil && job.EmployerID != "" {
+		authReq := &authpb.EmployerProfileByIdRequest{
+			EmployerId: job.EmployerID,
+		}
+
+		// Create a context with timeout to avoid hanging if Auth Service is unresponsive
+		authCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		employerResp, err := s.jobUsecase.AuthClient.EmployerProfileById(authCtx, authReq)
+
+		if err != nil {
+			// Check if this is a not found error
+			st, ok := grpcstatus.FromError(err)
+			if ok && st.Code() == codes.NotFound {
+				// Employer not found, use job data as fallback
+				employerResp = &authpb.EmployerProfileResponse{
+					CompanyName: "Company " + job.EmployerID,
+					Location:    job.Location,
+				}
+			} else {
+				// Other error with Auth Service
+				return nil, grpcstatus.Error(codes.Internal, fmt.Sprintf("failed to fetch employer profile: %v", err))
+			}
+		}
+
+		// Create company details from the employer profile response
+		details := []*jobpb.EmployerDetail{}
+
+		// Add company name
+		if employerResp.CompanyName != "" {
+			details = append(details, &jobpb.EmployerDetail{
+				Key:   "company_name",
+				Value: employerResp.CompanyName,
+			})
+		}
+
+		// Add email
+		if employerResp.Email != "" {
+			details = append(details, &jobpb.EmployerDetail{
+				Key:   "email",
+				Value: employerResp.Email,
+			})
+		}
+
+		// Add location
+		if employerResp.Location != "" {
+			details = append(details, &jobpb.EmployerDetail{
+				Key:   "location",
+				Value: employerResp.Location,
+			})
+		}
+
+		// Add website
+		if employerResp.Website != "" {
+			details = append(details, &jobpb.EmployerDetail{
+				Key:   "website",
+				Value: employerResp.Website,
+			})
+		}
+
+		// Add industry
+		if employerResp.Industry != "" {
+			details = append(details, &jobpb.EmployerDetail{
+				Key:   "industry",
+				Value: employerResp.Industry,
+			})
+		}
+
+		// Set the company details
+		companyDetails.Details = details
+		jobEmployerProfile.CompanyName = employerResp.CompanyName
+		jobEmployerProfile.Email = employerResp.Email
+		jobEmployerProfile.Location = employerResp.Location
+		jobEmployerProfile.Website = employerResp.Website
+		jobEmployerProfile.Industry = employerResp.Industry
+	} else {
+		// If we can't fetch from Auth Service, use job data as fallback
+		companyDetails.Details = append(companyDetails.Details, &jobpb.EmployerDetail{
+			Key:   "location",
+			Value: job.Location,
+		})
+
+		// Add a default company name
+		companyDetails.Details = append(companyDetails.Details, &jobpb.EmployerDetail{
+			Key:   "company_name",
+			Value: "Company",
+		})
+
+		// Populate employer profile with fallback data
+		jobEmployerProfile.CompanyName = "Company"
+		jobEmployerProfile.Location = job.Location
+	}
+
+	// Convert job to protobuf format
+	pbJob := &jobpb.Job{
+		Id:                 uint64(job.ID),
+		EmployerId:         job.EmployerID,
+		Title:              job.Title,
+		Description:        job.Description,
+		Category:           job.Category,
+		RequiredSkills:     pbSkills,
+		SalaryMin:          job.SalaryMin,
+		SalaryMax:          job.SalaryMax,
+		Location:           job.Location,
+		ExperienceRequired: int32(job.ExperienceRequired),
+		Status:             status,
+		EmployerProfile:    jobEmployerProfile,
+		CompanyDetails:     companyDetails,
+	}
+
+	return &jobpb.GetJobByIdResponse{
+		Job: pbJob,
+	}, nil
 }
 
 // GetApplications implements the GetApplications gRPC method
 func (s *JobServer) GetApplications(ctx context.Context, req *jobpb.GetApplicationsRequest) (*jobpb.GetApplicationsResponse, error) {
-	return &jobpb.GetApplicationsResponse{}, nil
+	// Extract user information from metadata
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil, grpcstatus.Error(codes.Unauthenticated, "missing metadata")
+	}
+
+	// Get user ID and role from metadata (set by auth middleware)
+	userIDs := md.Get("x-user-id")
+	userRoles := md.Get("x-user-role")
+
+	if len(userIDs) == 0 || len(userRoles) == 0 {
+		return nil, grpcstatus.Error(codes.Unauthenticated, "missing user ID or role in metadata")
+	}
+
+	userID := userIDs[0]
+	userRole := userRoles[0]
+
+	// If this is a candidate request, verify the user is requesting their own applications
+	if req.CandidateId != "" {
+		// Verify the user is a candidate or admin
+		if userRole != "candidate" && userRole != "admin" {
+			return nil, grpcstatus.Error(codes.PermissionDenied, "only candidates or admins can view candidate applications")
+		}
+
+		// If candidate, verify they're requesting their own applications
+		if userRole == "candidate" && userID != req.CandidateId {
+			return nil, grpcstatus.Error(codes.PermissionDenied, "candidates can only view their own applications")
+		}
+
+		// Get applications for the candidate
+		applications, err := s.jobUsecase.GetApplicationsByCandidate(ctx, req.CandidateId, req.Status)
+		if err != nil {
+			return nil, grpcstatus.Errorf(codes.Internal, "failed to get applications: %v", err)
+		}
+
+		// Convert applications to protobuf format
+		var pbApplications []*jobpb.ApplicationResponse
+		for _, app := range applications {
+			// Convert IDs to uint64
+			appID := uint64(app.ID)
+
+			// Create application response
+			appResponse := &jobpb.ApplicationResponse{
+				Id:          appID,
+				CandidateId: app.CandidateID,
+				Status:      app.Status,
+				ResumeUrl:   app.ResumeURL,
+			}
+
+			// Format the applied_at timestamp if available
+			if !app.AppliedAt.IsZero() {
+				appResponse.AppliedAt = app.AppliedAt.Format(time.RFC3339)
+			}
+
+			// For ApplicationResponse, the Job field should already be populated
+			var job *models.Job
+
+			// Use the existing job from the ApplicationResponse
+			job = app.Job
+
+			// If we have a job, add it to the response
+			if job != nil {
+				// Create a new Job object
+				pbJob := &jobpb.Job{
+					Id:                 uint64(job.ID),
+					EmployerId:         job.EmployerID,
+					Title:              job.Title,
+					Description:        job.Description,
+					Category:           job.Category,
+					SalaryMin:          job.SalaryMin,
+					SalaryMax:          job.SalaryMax,
+					Location:           job.Location,
+					ExperienceRequired: int32(job.ExperienceRequired),
+					Status:             job.Status,
+				}
+
+				// Add job skills if available
+				if len(job.RequiredSkills) > 0 {
+					var pbSkills []*jobpb.JobSkill
+					for _, skill := range job.RequiredSkills {
+						pbSkills = append(pbSkills, &jobpb.JobSkill{
+							JobId:       fmt.Sprintf("%d", job.ID),
+							Skill:       skill.Skill,
+							Proficiency: skill.Proficiency,
+						})
+					}
+					pbJob.RequiredSkills = pbSkills
+				}
+
+				// Set the job in the application response
+				appResponse.Job = pbJob
+			}
+
+			pbApplications = append(pbApplications, appResponse)
+		}
+
+		return &jobpb.GetApplicationsResponse{
+			Applications: pbApplications,
+		}, nil
+	}
+	// If we reach here, the request is invalid
+	return nil, grpcstatus.Error(codes.InvalidArgument, "must specify either candidateId or jobId")
+}
+
+// GetApplication implements the GetApplication gRPC method
+func (s *JobServer) GetApplication(ctx context.Context, req *jobpb.GetApplicationRequest) (*jobpb.GetApplicationResponse, error) {
+	// Get application ID from request
+	applicationID := req.GetApplicationId()
+	if applicationID == 0 {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "application ID is required")
+	}
+
+	// Extract user information from metadata
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil, grpcstatus.Error(codes.Unauthenticated, "missing metadata")
+	}
+
+	// Get user ID and role from metadata (set by auth middleware)
+	userIDs := md.Get("x-user-id")
+	userRoles := md.Get("x-user-role")
+
+	if len(userIDs) == 0 || len(userRoles) == 0 {
+		return nil, grpcstatus.Error(codes.Unauthenticated, "missing user ID or role in metadata")
+	}
+
+	userID := userIDs[0]
+	userRole := userRoles[0]
+
+	// Get application by ID
+	application, err := s.jobUsecase.GetApplicationByID(ctx, uint(applicationID))
+	if err != nil {
+		return nil, grpcstatus.Errorf(codes.Internal, "failed to get application: %v", err)
+	}
+
+	// Verify the user has permission to view this application
+	// If user is a candidate, they can only view their own applications
+	if userRole == "candidate" && userID != application.CandidateID {
+		return nil, grpcstatus.Error(codes.PermissionDenied, "candidates can only view their own applications")
+	}
+
+	// Create application response
+	appResponse := &jobpb.ApplicationResponse{
+		Id:          uint64(application.ID),
+		CandidateId: application.CandidateID,
+		Status:      application.Status,
+		ResumeUrl:   application.ResumeURL,
+	}
+
+	// Format the applied_at timestamp if available
+	if !application.AppliedAt.IsZero() {
+		appResponse.AppliedAt = application.AppliedAt.Format(time.RFC3339)
+	}
+
+	// Add job details if available
+	if application.Job != nil {
+		job := application.Job
+
+		// Create a new Job object
+		pbJob := &jobpb.Job{
+			Id:                 uint64(job.ID),
+			EmployerId:         job.EmployerID,
+			Title:              job.Title,
+			Description:        job.Description,
+			Category:           job.Category,
+			SalaryMin:          job.SalaryMin,
+			SalaryMax:          job.SalaryMax,
+			Location:           job.Location,
+			ExperienceRequired: int32(job.ExperienceRequired),
+			Status:             job.Status,
+		}
+
+		// Add job skills if available
+		if len(job.RequiredSkills) > 0 {
+			var pbSkills []*jobpb.JobSkill
+			for _, skill := range job.RequiredSkills {
+				pbSkills = append(pbSkills, &jobpb.JobSkill{
+					JobId:       fmt.Sprintf("%d", job.ID),
+					Skill:       skill.Skill,
+					Proficiency: skill.Proficiency,
+				})
+			}
+			pbJob.RequiredSkills = pbSkills
+		}
+
+		// Set the job in the application response
+		appResponse.Job = pbJob
+	}
+
+	// Create the final response
+	response := &jobpb.GetApplicationResponse{
+		Application: appResponse,
+	}
+
+	return response, nil
 }
 
 // UpdateApplicationStatus implements the UpdateApplicationStatus gRPC method
@@ -373,12 +644,9 @@ func (s *JobServer) UpdateApplicationStatus(ctx context.Context, req *jobpb.Upda
 
 // AddJobSkills implements the AddJobSkills gRPC method
 func (s *JobServer) AddJobSkills(ctx context.Context, req *jobpb.AddJobSkillsRequest) (*jobpb.AddJobSkillsResponse, error) {
-	log.Printf("GRPC DEBUG: Received AddJobSkills request for job ID: %s", req.JobId)
-
 	// Convert job ID from string to uint
 	jobID := req.JobId
 	if jobID == 0 {
-		log.Printf("GRPC ERROR: Invalid job ID format: %v", jobID)
 		return nil, grpcstatus.Error(codes.InvalidArgument, "invalid job ID format")
 	}
 
@@ -395,11 +663,9 @@ func (s *JobServer) AddJobSkills(ctx context.Context, req *jobpb.AddJobSkillsReq
 	var err error
 	err = s.jobUsecase.AddJobSkills(ctx, skills)
 	if err != nil {
-		log.Printf("GRPC ERROR: Failed to add job skills: %v", err)
 		return nil, err
 	}
 
-	log.Printf("GRPC DEBUG: Successfully added %d skills to job ID: %s", len(skills), req.JobId)
 	return &jobpb.AddJobSkillsResponse{
 		Message: fmt.Sprintf("Successfully added %d skills to job", len(skills)),
 	}, nil
@@ -407,13 +673,9 @@ func (s *JobServer) AddJobSkills(ctx context.Context, req *jobpb.AddJobSkillsReq
 
 // UpdateJobStatus implements the UpdateJobStatus gRPC method
 func (s *JobServer) UpdateJobStatus(ctx context.Context, req *jobpb.UpdateJobStatusRequest) (*jobpb.UpdateJobStatusResponse, error) {
-	log.Printf("GRPC DEBUG: UpdateJobStatus gRPC method called")
-	log.Printf("GRPC DEBUG: Request parameters - JobID: %s, Status: %s", req.JobId, req.Status)
-
 	// Extract user information from metadata
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		log.Println("GRPC ERROR: No metadata found in context")
 		return nil, grpcstatus.Error(codes.Unauthenticated, "missing metadata")
 	}
 
@@ -422,7 +684,6 @@ func (s *JobServer) UpdateJobStatus(ctx context.Context, req *jobpb.UpdateJobSta
 	userRoles := md.Get("x-user-role")
 
 	if len(employerIDs) == 0 || len(userRoles) == 0 {
-		log.Println("GRPC ERROR: Missing user ID or role in metadata")
 		return nil, grpcstatus.Error(codes.Unauthenticated, "missing user ID or role in metadata")
 	}
 
@@ -431,22 +692,162 @@ func (s *JobServer) UpdateJobStatus(ctx context.Context, req *jobpb.UpdateJobSta
 
 	// Verify the user is an employer
 	if userRole != "employer" {
-		log.Printf("GRPC ERROR: User with role '%s' is not authorized to update job status", userRole)
 		return nil, grpcstatus.Error(codes.PermissionDenied, "only employers can update job status")
 	}
-
-	log.Printf("GRPC DEBUG: Updating job status - JobID: %s, EmployerID: %s, New Status: %s",
-		req.JobId, employerID, req.Status)
 
 	// Call the usecase to update the job status
 	err := s.jobUsecase.UpdateJobStatus(ctx, req.JobId, employerID, req.Status)
 	if err != nil {
-		log.Printf("GRPC ERROR: Failed to update job status: %v", err)
 		return nil, grpcstatus.Errorf(codes.Internal, "failed to update job status: %v", err)
 	}
 
-	log.Printf("GRPC SUCCESS: Successfully updated status of job ID %s to %s", req.JobId, req.Status)
 	return &jobpb.UpdateJobStatusResponse{
 		Message: "Job status updated successfully",
 	}, nil
+}
+
+// FilterApplications implements the FilterApplications gRPC method
+func (s *JobServer) FilterApplications(ctx context.Context, req *jobpb.FilterApplicationsRequest) (*jobpb.FilterApplicationsResponse, error) {
+	// Extract user information from metadata
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil, grpcstatus.Error(codes.Unauthenticated, "missing metadata")
+	}
+
+	// Get employer ID from metadata (set by auth middleware)
+	employerIDs := md.Get("x-user-id")
+	userRoles := md.Get("x-user-role")
+
+	if len(employerIDs) == 0 || len(userRoles) == 0 {
+		return nil, grpcstatus.Error(codes.Unauthenticated, "missing user ID or role in metadata")
+	}
+
+	employerID := employerIDs[0]
+	userRole := userRoles[0]
+
+	// Verify the user is an employer
+	if userRole != "employer" {
+		return nil, grpcstatus.Error(codes.PermissionDenied, "only employers can filter applications")
+	}
+
+	// Ensure jobID is provided and valid
+	if req.JobId == 0 {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "job ID is required")
+	}
+
+	// Ensure employerID is provided and valid
+	if employerID == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "employer ID is required")
+	}
+
+	// We're not using filter options from the request anymore
+	// Instead, we'll fetch all the necessary details from the job and applications
+	filterOptions := map[string]interface{}{}
+
+	// Call the usecase to filter applications
+	applications, err := s.jobUsecase.FilterApplicationsByJob(ctx, fmt.Sprintf("%d", req.JobId), filterOptions)
+	if err != nil {
+		return nil, grpcstatus.Errorf(codes.Internal, "failed to filter applications: %v", err)
+	}
+
+	// Convert domain model to protobuf response
+	pbRankedApps := make([]*jobpb.RankedApplication, 0, len(applications))
+	for _, rankedApp := range applications {
+		// Convert application response to protobuf
+		app := rankedApp.Application
+
+		// Create protobuf application response
+		pbApp := &jobpb.ApplicationResponse{
+			Id:          uint64(app.ID),
+			CandidateId: app.CandidateID,
+			Status:      app.Status,
+			ResumeUrl:   app.ResumeURL,
+		}
+
+		// Format the applied_at timestamp if available
+		if !app.AppliedAt.IsZero() {
+			pbApp.AppliedAt = app.AppliedAt.Format(time.RFC3339)
+		}
+
+		// Add job details if available
+		if app.Job != nil {
+			job := app.Job
+
+			// Create a new Job object
+			pbJob := &jobpb.Job{
+				Id:                 uint64(job.ID),
+				EmployerId:         job.EmployerID,
+				Title:              job.Title,
+				Description:        job.Description,
+				Category:           job.Category,
+				SalaryMin:          job.SalaryMin,
+				SalaryMax:          job.SalaryMax,
+				Location:           job.Location,
+				ExperienceRequired: int32(job.ExperienceRequired),
+				Status:             job.Status,
+			}
+
+			// Add job skills if available
+			if len(job.RequiredSkills) > 0 {
+				var pbSkills []*jobpb.JobSkill
+				for _, skill := range job.RequiredSkills {
+					pbSkills = append(pbSkills, &jobpb.JobSkill{
+						JobId:       fmt.Sprintf("%d", job.ID),
+						Skill:       skill.Skill,
+						Proficiency: skill.Proficiency,
+					})
+				}
+				pbJob.RequiredSkills = pbSkills
+			}
+
+			// Add employer profile if available
+			if job.EmployerProfile != nil {
+				pbJob.EmployerProfile = &jobpb.EmployerProfile{
+					CompanyName: job.EmployerProfile.CompanyName,
+					Industry:    job.EmployerProfile.Industry,
+					Website:     job.EmployerProfile.Website,
+					Location:    job.EmployerProfile.Location,
+					IsVerified:  job.EmployerProfile.IsVerified,
+					IsTrusted:   job.EmployerProfile.IsTrusted,
+				}
+			}
+
+			pbApp.Job = pbJob
+		}
+
+		// Create the ranked application protobuf message
+		// Initialize empty arrays for matching and missing skills if they're nil
+		var matchingSkills []string
+		var missingSkills []string
+
+		// Use the actual skills if available, otherwise use empty arrays
+		if rankedApp.MatchingSkills != nil {
+			matchingSkills = rankedApp.MatchingSkills
+		}
+
+		if rankedApp.MissingSkills != nil {
+			missingSkills = rankedApp.MissingSkills
+		}
+
+		pbRankedApp := &jobpb.RankedApplication{
+			Application:    pbApp,
+			RelevanceScore: rankedApp.RelevanceScore,
+			MatchingSkills: matchingSkills,
+			MissingSkills:  missingSkills,
+		}
+
+		pbRankedApps = append(pbRankedApps, pbRankedApp)
+	}
+
+	// Add total applications count and a proper message
+	totalApplications := uint32(len(applications))
+
+	// Construct response with message and total count
+	response := &jobpb.FilterApplicationsResponse{
+		RankedApplications: pbRankedApps,
+		TotalApplications:  int32(totalApplications),
+		Message:            fmt.Sprintf("Successfully filtered %d applications for job ID %d", totalApplications, req.JobId),
+	}
+
+	return response, nil
 }

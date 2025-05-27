@@ -15,9 +15,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/shahal0/skillsync-protos/gen/authpb"
 	"github.com/shahal0/skillsync-protos/gen/jobpb"
+
+	//"github.com/shahal0/skillsync-protos/gen/jobpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	stdgrpc "google.golang.org/grpc"
 )
 
 func main() {
@@ -40,7 +41,7 @@ func main() {
 	log.Println("Successfully created Auth Service client connection")
 
 	// Dependency injection
-	jobRepo := repository.NewJobRepository(db)
+	jobRepo := repository.NewJobRepository(db, authClient)
 	jobUC := usecase.NewJobUsecase(jobRepo, authClient)
 	authMiddleware := middleware.AuthMiddleware
 	jobHandler := handler.NewJobHandler(jobUC, authClient)
@@ -52,9 +53,9 @@ func main() {
 	routes.JobRoutes(r, jobHandler, authMiddleware)
 
 	// Create a new gRPC server
-	grpcServer := stdgrpc.NewServer()
+	grpcServer := grpc.NewServer()
 
-	// Create the job server implementation with auth client
+	// Create the job server implementation with job usecase
 	jobServer := jobgrpc.NewJobServer(jobUC)
 
 	// Register the job server with the gRPC server

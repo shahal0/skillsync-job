@@ -3,18 +3,19 @@ package usecase
 import (
 	"context"
 	"errors"
+	"fmt"
 	"jobservice/domain/models"
 	"jobservice/domain/repository"
 	"jobservice/middleware"
-	//"log"
+	"strconv"
 	"strings"
-	
+
 	"github.com/golang-jwt/jwt"
 	"github.com/shahal0/skillsync-protos/gen/authpb"
 )
 
 type JobUsecase struct {
-	jobRepo repository.JobRepository
+	jobRepo    repository.JobRepository
 	AuthClient authpb.AuthServiceClient
 }
 
@@ -22,15 +23,15 @@ func NewJobUsecase(repo repository.JobRepository, authClient authpb.AuthServiceC
 	return &JobUsecase{jobRepo: repo, AuthClient: authClient}
 }
 
-func (uc *JobUsecase) PostJob(ctx context.Context, job *models.Job,employerid string) error {
+func (uc *JobUsecase) PostJob(ctx context.Context, job *models.Job, employerid string) error {
 	// Fetch EmployerID from the context
-	if  employerid == "" {
+	if employerid == "" {
 		return errors.New("failed to fetch employer ID from token")
 	}
 
 	// Set EmployerID in the job model
 
-	return uc.jobRepo.PostJob(ctx, job,employerid)
+	return uc.jobRepo.PostJob(ctx, job, employerid)
 }
 
 func (uc *JobUsecase) GetJobs(ctx context.Context, filters map[string]interface{}) ([]models.Job, error) {
@@ -38,12 +39,6 @@ func (uc *JobUsecase) GetJobs(ctx context.Context, filters map[string]interface{
 }
 
 func (uc *JobUsecase) ApplyToJob(ctx context.Context, candidateID string, jobid string) (string, error) {
-	// Fetch CandidateID from the context
-	if candidateID == "" {
-		return "", errors.New("failed to fetch candidate ID from token")
-	}
-
-	// Call repository to apply to job and get application ID
 	return uc.jobRepo.ApplyToJob(ctx, candidateID, jobid)
 }
 
@@ -55,7 +50,7 @@ func (uc *JobUsecase) AddJobSkills(ctx context.Context, skills []models.JobSkill
 func (uc *JobUsecase) UpdateJobStatus(ctx context.Context, jobID string, employerID string, status string) error {
 	// Validate status is one of the allowed values
 	validStatuses := map[string]bool{
-		"OPEN":       true,
+		"OPEN":        true,
 		"IN_PROGRESS": true,
 		"COMPLETED":   true,
 		"CANCELLED":   true,
@@ -117,4 +112,40 @@ func (uc *JobUsecase) VerifyToken(token string) (*middleware.Claims, error) {
 		UserID: userID,
 		Role:   role,
 	}, nil
+}
+
+func (uc *JobUsecase) GetJobByID(ctx context.Context, jobID string) (*models.Job, error) {
+	return uc.jobRepo.GetJobByID(ctx, jobID)
+}
+
+func (uc *JobUsecase) GetApplicationsByCandidate(ctx context.Context, candidateID string, status string) ([]models.ApplicationResponse, error) {
+	// Validate candidate ID
+	if candidateID == "" {
+		return nil, errors.New("candidate ID is required")
+	}
+
+	// Get applications from repository
+	return uc.jobRepo.GetApplicationsByCandidate(ctx, candidateID, status)
+}
+
+func (uc *JobUsecase) GetApplicationByID(ctx context.Context, applicationID uint) (*models.ApplicationResponse, error) {
+	// Validate application ID
+	if applicationID == 0 {
+		return nil, errors.New("application ID is required")
+	}
+
+	// Get application from repository
+	return uc.jobRepo.GetApplicationByID(ctx, applicationID)
+}
+
+// FilterApplicationsByJob filters and ranks applications for a specific job based on various criteria
+func (uc *JobUsecase) FilterApplicationsByJob(ctx context.Context, jobID string, filterOptions map[string]interface{}) ([]models.RankedApplication, error) {
+	// Convert string jobID to uint64
+	jobIDUint, err := strconv.ParseUint(jobID, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid job ID format: %v", err)
+	}
+
+	// Call repository method
+	return uc.jobRepo.FilterApplicationsByJob(ctx, jobIDUint, filterOptions, uc.AuthClient)
 }

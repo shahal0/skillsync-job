@@ -37,6 +37,11 @@ type Application struct {
 	ResumeURL   string    `json:"resume_url"`
 	AppliedAt   time.Time `json:"applied_at"`
 }
+
+// TableName specifies the table name for the Application model
+func (Application) TableName() string {
+	return "applications"
+}
 // TableName specifies the table name for the Job model
 func (Job) TableName() string {
 	return "jobs"
@@ -72,4 +77,18 @@ type ApplicationRequest struct {
     JobID       string `json:"job_id" binding:"required"`
     CandidateID string `json:"candidate_id" binding:"required"`
     ResumeURL   string `json:"resume_url" binding:"required"`
+}
+type ApplicationResponse struct {
+    ID          uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+    Job         *Job      `json:"job"`
+    CandidateID string    `json:"candidate_id"`
+    Status      string    `json:"status"`	
+    ResumeURL   string    `json:"resume_url"`
+    AppliedAt   time.Time `json:"applied_at"`
+}
+type RankedApplication struct {
+    Application    *ApplicationResponse `json:"application"`
+    RelevanceScore float64             `json:"relevance_score"`   // Score from 0-100 indicating relevance
+    MatchingSkills []string            `json:"matching_skills"`  // Skills that matched job requirements
+    MissingSkills  []string            `json:"missing_skills"`   // Skills that were required but missing
 }
