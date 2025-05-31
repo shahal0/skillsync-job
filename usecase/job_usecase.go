@@ -34,8 +34,14 @@ func (uc *JobUsecase) PostJob(ctx context.Context, job *models.Job, employerid s
 	return uc.jobRepo.PostJob(ctx, job, employerid)
 }
 
+// GetJobs returns jobs based on filters (maintained for backward compatibility)
 func (uc *JobUsecase) GetJobs(ctx context.Context, filters map[string]interface{}) ([]models.Job, error) {
 	return uc.jobRepo.GetJobs(ctx, filters)
+}
+
+// GetJobsWithPagination returns jobs with pagination support
+func (uc *JobUsecase) GetJobsWithPagination(ctx context.Context, filters map[string]interface{}) ([]models.Job, int64, error) {
+	return uc.jobRepo.GetJobsWithPagination(ctx, filters)
 }
 
 func (uc *JobUsecase) ApplyToJob(ctx context.Context, candidateID string, jobid string) (string, error) {
@@ -119,13 +125,22 @@ func (uc *JobUsecase) GetJobByID(ctx context.Context, jobID string) (*models.Job
 }
 
 func (uc *JobUsecase) GetApplicationsByCandidate(ctx context.Context, candidateID string, status string) ([]models.ApplicationResponse, error) {
-	// Validate candidate ID
-	if candidateID == "" {
-		return nil, errors.New("candidate ID is required")
+	// Check if the candidate exists
+	_, err := uc.AuthClient.CandidateProfile(ctx, &authpb.CandidateProfileRequest{Token: candidateID})
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify candidate: %v", err)
 	}
-
-	// Get applications from repository
 	return uc.jobRepo.GetApplicationsByCandidate(ctx, candidateID, status)
+}
+
+// GetApplicationsByCandidateWithPagination returns applications for a candidate with pagination support
+func (uc *JobUsecase) GetApplicationsByCandidateWithPagination(ctx context.Context, candidateID string, status string, page, limit int32) ([]models.ApplicationResponse, int64, error) {
+	// Check if the candidate exists
+	_, err := uc.AuthClient.CandidateProfile(ctx, &authpb.CandidateProfileRequest{Token: candidateID})
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to verify candidate: %v", err)
+	}
+	return uc.jobRepo.GetApplicationsByCandidateWithPagination(ctx, candidateID, status, page, limit)
 }
 
 func (uc *JobUsecase) GetApplicationByID(ctx context.Context, applicationID uint) (*models.ApplicationResponse, error) {
@@ -136,6 +151,28 @@ func (uc *JobUsecase) GetApplicationByID(ctx context.Context, applicationID uint
 
 	// Get application from repository
 	return uc.jobRepo.GetApplicationByID(ctx, applicationID)
+}
+
+// GetApplicationsByJob retrieves applications for a specific job, optionally filtered by status.
+func (uc *JobUsecase) GetApplicationsByJob(ctx context.Context, jobID string, status string) ([]models.ApplicationResponse, error) {
+	// Validate job ID
+	if jobID == "" {
+		return nil, errors.New("job ID is required")
+	}
+
+	// Get applications from repository
+	return uc.jobRepo.GetApplicationsByJob(ctx, jobID, status)
+}
+
+// GetApplicationsByJobWithPagination retrieves applications for a specific job with pagination support
+func (uc *JobUsecase) GetApplicationsByJobWithPagination(ctx context.Context, jobID string, status string, page, limit int32) ([]models.ApplicationResponse, int64, error) {
+	// Validate job ID
+	if jobID == "" {
+		return nil, 0, errors.New("job ID is required")
+	}
+
+	// Get applications from repository with pagination
+	return uc.jobRepo.GetApplicationsByJobWithPagination(ctx, jobID, status, page, limit)
 }
 
 // FilterApplicationsByJob filters and ranks applications for a specific job based on various criteria

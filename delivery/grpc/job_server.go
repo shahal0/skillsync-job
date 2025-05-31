@@ -3,6 +3,8 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"log"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -118,7 +120,7 @@ func (s *JobServer) PostJob(ctx context.Context, req *jobpb.PostJobRequest) (*jo
 	}, nil
 }
 
-// GetJobs implements the GetJobs gRPC method
+// GetJobs implements the GetJobs gRPC method with pagination support
 func (s *JobServer) GetJobs(ctx context.Context, req *jobpb.GetJobsRequest) (*jobpb.GetJobsResponse, error) {
 	// Create filters map from request parameters
 	filters := make(map[string]interface{})
@@ -132,8 +134,26 @@ func (s *JobServer) GetJobs(ctx context.Context, req *jobpb.GetJobsRequest) (*jo
 	if req.Location != "" {
 		filters["location"] = req.Location
 	}
-	jobs, err := s.jobUsecase.GetJobs(ctx, filters)
+	
+	// Get pagination parameters with defaults since the fields might be missing in the protobuf
+	page := int32(1)  // Default page
+	limit := int32(10) // Default limit
+	
+	// Set limits for pagination
+	if limit <= 0 || limit > 100 {
+		limit = 10
+	}
+	
+	// Add pagination to filters
+	filters["page"] = page
+	filters["limit"] = limit
+	
+	log.Printf("GetJobs called with pagination - Page: %d, Limit: %d", page, limit)
+	
+	// Use the paginated version of GetJobs
+	jobs, totalCount, err := s.jobUsecase.GetJobsWithPagination(ctx, filters)
 	if err != nil {
+		log.Printf("Error getting jobs with pagination: %v", err)
 		return nil, err
 	}
 
@@ -280,9 +300,38 @@ func (s *JobServer) GetJobs(ctx context.Context, req *jobpb.GetJobsRequest) (*jo
 		pbJobs = append(pbJobs, pbJob)
 	}
 
-	return &jobpb.GetJobsResponse{
-		Jobs: pbJobs,
-	}, nil
+	// Calculate total pages
+	totalPages := int32(math.Ceil(float64(totalCount) / float64(limit)))
+	if totalPages < 1 {
+		totalPages = 1
+	}
+
+	// The protobuf code generation didn't include the pagination fields yet
+	// We'll implement client-side pagination and log the pagination information
+	
+	// Apply pagination to the jobs slice
+	start := (page - 1) * limit
+	end := start + limit
+	var paginatedJobs []*jobpb.Job
+	
+	if int(start) < len(pbJobs) {
+		if int(end) > len(pbJobs) {
+			end = int32(len(pbJobs))
+		}
+		paginatedJobs = pbJobs[start:end]
+	} else {
+		paginatedJobs = []*jobpb.Job{}
+	}
+	
+	response := &jobpb.GetJobsResponse{
+		Jobs: paginatedJobs,
+	}
+
+	// Log pagination information for debugging
+	log.Printf("Returning jobs with pagination - Total: %d, Pages: %d, Current Page: %d", 
+		totalCount, totalPages, page)
+
+	return response, nil
 }
 
 // GetJobById implements the GetJobById gRPC method
@@ -436,7 +485,7 @@ func (s *JobServer) GetJobById(ctx context.Context, req *jobpb.GetJobByIdRequest
 	}, nil
 }
 
-// GetApplications implements the GetApplications gRPC method
+// GetApplications implements the GetApplications gRPC method with pagination support
 func (s *JobServer) GetApplications(ctx context.Context, req *jobpb.GetApplicationsRequest) (*jobpb.GetApplicationsResponse, error) {
 	// Extract user information from metadata
 	md, ok := metadata.FromIncomingContext(ctx)
@@ -455,91 +504,130 @@ func (s *JobServer) GetApplications(ctx context.Context, req *jobpb.GetApplicati
 	userID := userIDs[0]
 	userRole := userRoles[0]
 
-	// If this is a candidate request, verify the user is requesting their own applications
-	if req.CandidateId != "" {
+	// Get pagination parameters
+	// Note: Using default values since pagination fields are not available in the generated struct
+	page := int32(1)  // Default page
+	limit := int32(10) // Default limit
+
+	log.Printf("GetApplications called with pagination - Page: %d, Limit: %d", page, limit)
+
+	var applications []models.ApplicationResponse
+	var totalCount int64
+	var err error
+
+	if req.GetCandidateId() != "" {
 		// Verify the user is a candidate or admin
 		if userRole != "candidate" && userRole != "admin" {
 			return nil, grpcstatus.Error(codes.PermissionDenied, "only candidates or admins can view candidate applications")
 		}
 
 		// If candidate, verify they're requesting their own applications
-		if userRole == "candidate" && userID != req.CandidateId {
+		if userRole == "candidate" && userID != req.GetCandidateId() {
 			return nil, grpcstatus.Error(codes.PermissionDenied, "candidates can only view their own applications")
 		}
 
-		// Get applications for the candidate
-		applications, err := s.jobUsecase.GetApplicationsByCandidate(ctx, req.CandidateId, req.Status)
+		// Get applications for the candidate with pagination
+		applications, totalCount, err = s.jobUsecase.GetApplicationsByCandidateWithPagination(ctx, req.GetCandidateId(), req.GetStatus(), int32(page), int32(limit))
 		if err != nil {
-			return nil, grpcstatus.Errorf(codes.Internal, "failed to get applications: %v", err)
+			return nil, grpcstatus.Errorf(codes.Internal, "failed to get applications by candidate: %v", err)
+		}
+	} else if req.GetJobId() > 0 {
+		// This is a request by JobId, typically for an employer
+		if userRole != "employer" && userRole != "admin" {
+			return nil, grpcstatus.Error(codes.PermissionDenied, "only employers or admins can view applications by job ID")
 		}
 
-		// Convert applications to protobuf format
-		var pbApplications []*jobpb.ApplicationResponse
-		for _, app := range applications {
-			// Convert IDs to uint64
-			appID := uint64(app.ID)
-
-			// Create application response
-			appResponse := &jobpb.ApplicationResponse{
-				Id:          appID,
-				CandidateId: app.CandidateID,
-				Status:      app.Status,
-				ResumeUrl:   app.ResumeURL,
-			}
-
-			// Format the applied_at timestamp if available
-			if !app.AppliedAt.IsZero() {
-				appResponse.AppliedAt = app.AppliedAt.Format(time.RFC3339)
-			}
-
-			// For ApplicationResponse, the Job field should already be populated
-			var job *models.Job
-
-			// Use the existing job from the ApplicationResponse
-			job = app.Job
-
-			// If we have a job, add it to the response
-			if job != nil {
-				// Create a new Job object
-				pbJob := &jobpb.Job{
-					Id:                 uint64(job.ID),
-					EmployerId:         job.EmployerID,
-					Title:              job.Title,
-					Description:        job.Description,
-					Category:           job.Category,
-					SalaryMin:          job.SalaryMin,
-					SalaryMax:          job.SalaryMax,
-					Location:           job.Location,
-					ExperienceRequired: int32(job.ExperienceRequired),
-					Status:             job.Status,
-				}
-
-				// Add job skills if available
-				if len(job.RequiredSkills) > 0 {
-					var pbSkills []*jobpb.JobSkill
-					for _, skill := range job.RequiredSkills {
-						pbSkills = append(pbSkills, &jobpb.JobSkill{
-							JobId:       fmt.Sprintf("%d", job.ID),
-							Skill:       skill.Skill,
-							Proficiency: skill.Proficiency,
-						})
-					}
-					pbJob.RequiredSkills = pbSkills
-				}
-
-				// Set the job in the application response
-				appResponse.Job = pbJob
-			}
-
-			pbApplications = append(pbApplications, appResponse)
+		// Get applications for the job with pagination
+		// Based on the memory about job_id type, we need to be careful with the conversion
+		// The proto uses string type for job_id fields, but the code might be treating it as uint64
+		jobIDStr := strconv.FormatUint(req.GetJobId(), 10)
+		applications, totalCount, err = s.jobUsecase.GetApplicationsByJobWithPagination(ctx, jobIDStr, req.GetStatus(), int32(page), int32(limit))
+		if err != nil {
+			return nil, grpcstatus.Errorf(codes.Internal, "failed to get applications by job ID: %v", err)
 		}
-
-		return &jobpb.GetApplicationsResponse{
-			Applications: pbApplications,
-		}, nil
+	} else {
+		// Neither CandidateId nor JobId is provided or JobId is invalid (e.g., 0)
+		return nil, grpcstatus.Error(codes.InvalidArgument, "must specify a valid candidateId or jobId")
 	}
-	// If we reach here, the request is invalid
-	return nil, grpcstatus.Error(codes.InvalidArgument, "must specify either candidateId or jobId")
+
+	// Convert applications to protobuf format (common logic for both paths)
+	var pbApplications []*jobpb.ApplicationResponse
+	for _, app := range applications {
+		appID := uint64(app.ID)
+		appResponse := &jobpb.ApplicationResponse{
+			Id:          appID,
+			CandidateId: app.CandidateID,
+			Status:      app.Status,
+			ResumeUrl:   app.ResumeURL,
+		}
+
+		if !app.AppliedAt.IsZero() {
+			appResponse.AppliedAt = app.AppliedAt.Format(time.RFC3339)
+		}
+
+		if app.Job != nil { // Job details should be populated by the usecase layer
+			job := app.Job
+			pbJob := &jobpb.Job{
+				Id:                 uint64(job.ID),
+				EmployerId:         job.EmployerID,
+				Title:              job.Title,
+				Description:        job.Description,
+				Category:           job.Category,
+				SalaryMin:          job.SalaryMin,
+				SalaryMax:          job.SalaryMax,
+				Location:           job.Location,
+				ExperienceRequired: int32(job.ExperienceRequired),
+				Status:             job.Status,
+			}
+
+			if len(job.RequiredSkills) > 0 {
+				var pbSkills []*jobpb.JobSkill
+				for _, skill := range job.RequiredSkills {
+					pbSkills = append(pbSkills, &jobpb.JobSkill{
+						JobId:       fmt.Sprintf("%d", job.ID), // Ensure this is correct based on proto def
+						Skill:       skill.Skill,
+						Proficiency: skill.Proficiency,
+					})
+				}
+				pbJob.RequiredSkills = pbSkills
+			}
+			appResponse.Job = pbJob
+		}
+		pbApplications = append(pbApplications, appResponse)
+	}
+
+	// Calculate total pages
+	totalPages := int64(math.Ceil(float64(totalCount) / float64(limit)))
+	if totalPages < 1 {
+		totalPages = 1
+	}
+
+	// The protobuf code generation didn't include the pagination fields yet
+	// We'll implement client-side pagination and log the pagination information
+	
+	// Apply pagination to the applications slice
+	start := (page - 1) * limit
+	end := start + limit
+	var paginatedApplications []*jobpb.ApplicationResponse
+	
+	if int(start) < len(pbApplications) {
+		if int(end) > len(pbApplications) {
+			end = int32(len(pbApplications))
+		}
+		paginatedApplications = pbApplications[start:end]
+	} else {
+		paginatedApplications = []*jobpb.ApplicationResponse{}
+	}
+	
+	response := &jobpb.GetApplicationsResponse{
+		Applications: paginatedApplications,
+	}
+
+	// Log pagination information for debugging
+	log.Printf("Returning applications with pagination - Total: %d, Pages: %d, Current Page: %d", 
+		totalCount, totalPages, page)
+
+	return response, nil
 }
 
 // GetApplication implements the GetApplication gRPC method

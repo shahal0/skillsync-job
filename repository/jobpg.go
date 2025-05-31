@@ -95,8 +95,10 @@ func (r *jobPG) PostJob(ctx context.Context, job *models.Job, employerid string)
 	return nil
 }
 
-func (r *jobPG) GetJobs(ctx context.Context, filters map[string]interface{}) ([]models.Job, error) {
+// GetJobsWithPagination returns jobs with pagination support
+func (r *jobPG) GetJobsWithPagination(ctx context.Context, filters map[string]interface{}) ([]models.Job, int64, error) {
 	var jobs []models.Job
+	var totalCount int64
 
 	// Start with a base query
 	query := r.db.WithContext(ctx).Model(&models.Job{})
@@ -116,7 +118,7 @@ func (r *jobPG) GetJobs(ctx context.Context, filters map[string]interface{}) ([]
 		subQuery := r.db.Table("job_skills").Select("job_id").Where("LOWER(skill) LIKE ?", keywordStr)
 		err := r.db.Table("jobs").Select("id").Where("id IN (?)", subQuery).Pluck("id", &jobIDsWithMatchingSkills).Error
 		if err != nil {
-			return nil, fmt.Errorf("failed to search skills: %v", err)
+			return nil, 0, fmt.Errorf("failed to search skills: %v", err)
 		}
 
 		// Build the keyword search condition
@@ -144,16 +146,38 @@ func (r *jobPG) GetJobs(ctx context.Context, filters map[string]interface{}) ([]
 		query = query.Where("jobs.location = ?", location)
 	}
 
+	// Count total records before applying pagination
+	if err := query.Count(&totalCount).Error; err != nil {
+		return nil, 0, fmt.Errorf("failed to count jobs: %v", err)
+	}
+
+	// Apply pagination if provided
+	if page, ok := filters["page"].(int32); ok && page > 0 {
+		limit := int32(10) // Default limit
+		if limitVal, ok := filters["limit"].(int32); ok && limitVal > 0 {
+			limit = limitVal
+		}
+		
+		offset := (page - 1) * limit
+		query = query.Offset(int(offset)).Limit(int(limit))
+	}
+
 	// Order by most recent first
 	query = query.Order("jobs.created_at DESC")
 
 	// Execute query with preloading of required skills
 	err := query.Preload("RequiredSkills").Find(&jobs).Error
 	if err != nil {
-		return nil, fmt.Errorf("failed to get jobs: %v", err)
+		return nil, 0, fmt.Errorf("failed to get jobs: %v", err)
 	}
 
-	return jobs, nil
+	return jobs, totalCount, nil
+}
+
+// GetJobs is maintained for backward compatibility
+func (r *jobPG) GetJobs(ctx context.Context, filters map[string]interface{}) ([]models.Job, error) {
+	jobs, _, err := r.GetJobsWithPagination(ctx, filters)
+	return jobs, err
 }
 
 func (r *jobPG) ApplyToJob(ctx context.Context, candidateid string, jobid string) (string, error) {
@@ -283,21 +307,20 @@ func (r *jobPG) GetJobByID(ctx context.Context, jobID string) (*models.Job, erro
 	return &job, nil
 }
 
+// GetApplicationsByCandidate returns applications for a candidate (maintained for backward compatibility)
 func (r *jobPG) GetApplicationsByCandidate(ctx context.Context, candidateID string, status string) ([]models.ApplicationResponse, error) {
+	// Call the paginated version with default values (no pagination)
+	apps, _, err := r.GetApplicationsByCandidateWithPagination(ctx, candidateID, status, 0, 0)
+	return apps, err
+}
+
+// GetApplicationsByCandidateWithPagination returns applications for a candidate with pagination support
+func (r *jobPG) GetApplicationsByCandidateWithPagination(ctx context.Context, candidateID string, status string, page, limit int32) ([]models.ApplicationResponse, int64, error) {
 	var applications []models.Application
+	var totalCount int64
 
 	// Start with a base query
-	log.Printf("DEBUG: Querying applications for candidate_id = %s", candidateID)
-
-	// First, check if the applications table exists and has records
-	var count int64
-	r.db.WithContext(ctx).Model(&models.Application{}).Count(&count)
-	log.Printf("DEBUG: Total applications in database: %d", count)
-
-	// Check if the candidate exists in the applications table
-	var candidateCount int64
-	r.db.WithContext(ctx).Model(&models.Application{}).Where("candidate_id = ?", candidateID).Count(&candidateCount)
-	log.Printf("DEBUG: Applications found for candidate %s: %d", candidateID, candidateCount)
+	log.Printf("DEBUG: Querying applications for candidate_id = %s with pagination (page: %d, limit: %d)", candidateID, page, limit)
 
 	// Build the query
 	query := r.db.WithContext(ctx).Model(&models.Application{}).Where("candidate_id = ?", candidateID)
@@ -308,14 +331,28 @@ func (r *jobPG) GetApplicationsByCandidate(ctx context.Context, candidateID stri
 		log.Printf("DEBUG: Added status filter: %s", status)
 	}
 
-	// Debug the SQL query - using a simpler approach
-	log.Printf("DEBUG: Query conditions: candidate_id = %s, status filter: %s", candidateID, status)
+	// Count total records before applying pagination
+	if err := query.Count(&totalCount).Error; err != nil {
+		log.Printf("ERROR: Failed to count applications: %v", err)
+		return nil, 0, fmt.Errorf("failed to count applications: %v", err)
+	}
+
+	log.Printf("DEBUG: Total applications found for candidate %s: %d", candidateID, totalCount)
+
+	// Apply pagination
+	if page > 0 && limit > 0 {
+		offset := (page - 1) * limit
+		query = query.Offset(int(offset)).Limit(int(limit))
+		log.Printf("DEBUG: Applied pagination with offset %d and limit %d", offset, limit)
+	}
 
 	// Execute the query and order by most recent first
 	if err := query.Order("applied_at DESC").Find(&applications).Error; err != nil {
 		log.Printf("ERROR: Failed to get applications: %v", err)
-		return nil, fmt.Errorf("failed to get applications: %v", err)
+		return nil, 0, fmt.Errorf("failed to get applications: %v", err)
 	}
+
+	log.Printf("DEBUG: Retrieved %d applications for page %d", len(applications), page)
 
 	// Create ApplicationResponse objects with job information
 	var applicationResponses []models.ApplicationResponse
@@ -348,10 +385,124 @@ func (r *jobPG) GetApplicationsByCandidate(ctx context.Context, candidateID stri
 	}
 
 	log.Printf("Found %d applications for candidate %s", len(applicationResponses), candidateID)
-	return applicationResponses, nil
+	return applicationResponses, totalCount, nil
 }
 
+// GetApplicationsByJob returns applications for a job (maintained for backward compatibility)
+func (r *jobPG) GetApplicationsByJob(ctx context.Context, jobID string, status string) ([]models.ApplicationResponse, error) {
+	// Call the paginated version with default values (no pagination)
+	apps, _, err := r.GetApplicationsByJobWithPagination(ctx, jobID, status, 0, 0)
+	return apps, err
+}
+
+// GetApplicationsByJobWithPagination returns applications for a job with pagination support
+func (r *jobPG) GetApplicationsByJobWithPagination(ctx context.Context, jobID string, status string, page, limit int32) ([]models.ApplicationResponse, int64, error) {
+	var applications []models.Application
+	var totalCount int64
+
+	// Start with a base query
+	log.Printf("DEBUG: Querying applications for job_id = %s with pagination (page: %d, limit: %d)", jobID, page, limit)
+
+	// Build the query
+	query := r.db.WithContext(ctx).Model(&models.Application{}).Where("job_id = ?", jobID)
+
+	// Apply status filter if provided
+	if status != "" {
+		query = query.Where("status = ?", status)
+		log.Printf("DEBUG: Added status filter: %s", status)
+	}
+
+	// Count total records before applying pagination
+	if err := query.Count(&totalCount).Error; err != nil {
+		log.Printf("ERROR: Failed to count applications: %v", err)
+		return nil, 0, fmt.Errorf("failed to count applications: %v", err)
+	}
+
+	log.Printf("DEBUG: Total applications found for job %s: %d", jobID, totalCount)
+
+	// Apply pagination
+	if page > 0 && limit > 0 {
+		offset := (page - 1) * limit
+		query = query.Offset(int(offset)).Limit(int(limit))
+		log.Printf("DEBUG: Applied pagination with offset %d and limit %d", offset, limit)
+	}
+
+	// Execute the query and order by most recent first
+	if err := query.Order("applied_at DESC").Find(&applications).Error; err != nil {
+		log.Printf("ERROR: Failed to get applications: %v", err)
+		return nil, 0, fmt.Errorf("failed to get applications: %v", err)
+	}
+
+	log.Printf("DEBUG: Retrieved %d applications for page %d", len(applications), page)
+
+	// Create ApplicationResponse objects with job information
+	var applicationResponses []models.ApplicationResponse
+	for _, app := range applications {
+		// Fetch the job for this application
+		job, err := r.GetJobByID(ctx, app.JobID)
+		if err != nil {
+			log.Printf("WARNING: Could not fetch job with ID %s for application %d: %v", app.JobID, app.ID, err)
+		}
+
+		// Create the application response
+		appResponse := models.ApplicationResponse{
+			ID:          app.ID,
+			CandidateID: app.CandidateID,
+			Status:      app.Status,
+			ResumeURL:   app.ResumeURL,
+			AppliedAt:   app.AppliedAt,
+			Job:         job,
+		}
+
+		applicationResponses = append(applicationResponses, appResponse)
+
+		// Log the application details
+		jobIDStr := "<nil>"
+		if job != nil {
+			jobIDStr = fmt.Sprintf("%d", job.ID)
+		}
+		log.Printf("DEBUG: Application - ID: %d, JobID: %s, CandidateID: %s, Status: %s",
+			app.ID, jobIDStr, app.CandidateID, app.Status)
+	}
+
+	log.Printf("Found %d applications for job %s", len(applicationResponses), jobID)
+	return applicationResponses, totalCount, nil
+}
+
+// GetApplicationByID is maintained for backward compatibility
 func (r *jobPG) GetApplicationByID(ctx context.Context, applicationID uint) (*models.ApplicationResponse, error) {
+	var application models.Application
+	if err := r.db.WithContext(ctx).First(&application, applicationID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("application with ID %d not found", applicationID)
+		}
+		return nil, fmt.Errorf("failed to get application by ID: %v", err)
+	}
+
+	var job models.Job
+	if err := r.db.WithContext(ctx).Preload("RequiredSkills").Preload("EmployerProfile").Preload("CompanyDetails").First(&job, application.JobID).Error; err != nil {
+		// Log the error but proceed if job details are not critical for this specific response
+		log.Printf("Warning: Failed to get job details for job ID %d: %v", application.JobID, err)
+		// Depending on requirements, you might return an error here or an ApplicationResponse with partial data
+	}
+
+	return &models.ApplicationResponse{
+		ID:          application.ID,
+		Job:         &job, // This will be an empty job struct if the fetch failed and not handled by returning error
+		CandidateID: application.CandidateID,
+		Status:      application.Status,
+		ResumeURL:   application.ResumeURL,
+		AppliedAt:   application.AppliedAt,
+	}, nil
+}
+
+
+// This function is no longer needed as it's been replaced by GetApplicationsByJobWithPagination
+
+// Make sure the original GetApplicationByID method signature is targeted correctly for replacement
+// The following is a placeholder for the original content of GetApplicationByID to ensure correct targeting.
+// This will be replaced by the new GetApplicationByID and the new GetApplicationsByJob method.
+func (r *jobPG) GetApplicationByID_placeholder(ctx context.Context, applicationID uint) (*models.ApplicationResponse, error) {
 	var application models.Application
 
 	// Log the operation
