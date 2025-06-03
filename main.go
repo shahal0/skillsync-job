@@ -11,12 +11,13 @@ import (
 	"jobservice/usecase"
 	"log"
 	"net"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/shahal0/skillsync-protos/gen/authpb"
 	"github.com/shahal0/skillsync-protos/gen/jobpb"
 
-	//"github.com/shahal0/skillsync-protos/gen/jobpb"
+	_ "net/http/pprof" // Import pprof for profiling
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -71,6 +72,14 @@ func main() {
 		log.Println("gRPC server is running on port 50052")
 		if err := grpcServer.Serve(lis); err != nil {
 			log.Fatalf("Failed to serve gRPC: %v", err)
+		}
+	}()
+	
+	// Start pprof HTTP server for profiling
+	go func() {
+		log.Println("Starting pprof profiling server on port 6061")
+		if err := http.ListenAndServe("localhost:6061", nil); err != nil {
+			log.Printf("Pprof server failed: %v", err)
 		}
 	}()
 
